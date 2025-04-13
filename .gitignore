@@ -1,3 +1,10 @@
+# Jupyter Notebook checkpoints
 .ipynb_checkpoints/
-.virtual_documents/
+
+# VSCode or Anaconda Projects metadata
+.vscode/
 anaconda_projects/
+
+# OS-specific or editor-specific files
+.DS_Store
+Thumbs.db
