@@ -15,6 +15,9 @@ def _csv(name: str) -> Array:
         raise FileNotFoundError(path)
     return pd.read_csv(path).to_numpy()
 
+def _load_defocus(chl: str = "chl_zf85") -> np.ndarray:
+    return _csv(f"defocus_{chl}")
+
 
 def _load_daylight(src: str = "d65") -> Array:
     return _csv(f"daylight_{src}")
