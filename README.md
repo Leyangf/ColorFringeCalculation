@@ -77,3 +77,23 @@ This command creates a copy of `.env.example` and names it `.env`, allowing you 
 ```
 
 --------
+
+## Zemax Colour Fringe Evaluation
+
+1. Create the Conda environment and activate it:
+
+   ```bash
+   conda env create -f environment.yml
+   conda activate masterthesis
+   ```
+
+2. Run the Zemax helper to fetch the chromatic focal shift curve and
+   compute colour fringe metrics:
+
+   ```bash
+   python -m achromatcfw.zemax_utils path/to/system.zmx \
+       --defocus-range 500 --xrange 200 --F 8.0 --gamma 1.0
+   ```
+
+The script prints the maximum and mean colour fringe width across the
+specified defocus range.  Use `-h` to see all available options.
