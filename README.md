@@ -1,99 +1,57 @@
-# Data Project Template
+# AchromatCFW
 
-<a target="_blank" href="https://datalumina.com/">
-    <img src="https://img.shields.io/badge/Datalumina-Project%20Template-2856f7" alt="Datalumina Project" />
-</a>
+Utilities for analysing chromatic focal shift data exported from Zemax OpticStudio. The package
+provides tools for loading spectral data, computing colour fringe width metrics and running small
+experiments in notebooks.
 
-## Cookiecutter Data Science
-This project template is a simplified version of the [Cookiecutter Data Science](https://cookiecutter-data-science.drivendata.org) template, created to suit the needs of Datalumina and made available as a GitHub template.
+## Setup
 
-## Adjusting .gitignore
-
-Ensure you adjust the `.gitignore` file according to your project needs. For example, since this is a template, the `/data/` folder is commented out and data will not be exlucded from source control:
-
-```plaintext
-# exclude data from source control by default
-# /data/
-```
-
-Typically, you want to exclude this folder if it contains either sensitive data that you do not want to add to version control or large files.
-
-## Duplicating the .env File
-To set up your environment variables, you need to duplicate the `.env.example` file and rename it to `.env`. You can do this manually or using the following terminal command:
+Create the Conda environment and activate it:
 
 ```bash
-cp .env.example .env # Linux, macOS, Git Bash, WSL
-copy .env.example .env # Windows Command Prompt
+conda env create -f environment.yml
+conda activate masterthesis
 ```
 
-This command creates a copy of `.env.example` and names it `.env`, allowing you to configure your environment variables specific to your setup.
+Alternatively install the minimal requirements with pip:
 
-
-## Project Organization
-
-```
-├── LICENSE            <- Open-source license if one is chosen
-├── README.md          <- The top-level README for developers using this project
-├── data
-│   ├── external       <- Data from third party sources
-│   ├── interim        <- Intermediate data that has been transformed
-│   ├── processed      <- The final, canonical data sets for modeling
-│   └── raw            <- The original, immutable data dump
-│
-├── models             <- Trained and serialized models, model predictions, or model summaries
-│
-├── notebooks          <- Jupyter notebooks. Naming convention is a number (for ordering),
-│                         the creator's initials, and a short `-` delimited description, e.g.
-│                         `1.0-jqp-initial-data-exploration`
-│
-├── references         <- Data dictionaries, manuals, and all other explanatory materials
-│
-├── reports            <- Generated analysis as HTML, PDF, LaTeX, etc.
-│   └── figures        <- Generated graphics and figures to be used in reporting
-│
-├── requirements.txt   <- The requirements file for reproducing the analysis environment, e.g.
-│                         generated with `pip freeze > requirements.txt`
-│
-└── src                         <- Source code for this project
-    │
-    ├── __init__.py             <- Makes src a Python module
-    │
-    ├── config.py               <- Store useful variables and configuration
-    │
-    ├── dataset.py              <- Scripts to download or generate data
-    │
-    ├── features.py             <- Code to create features for modeling
-    │
-    │    
-    ├── modeling                
-    │   ├── __init__.py 
-    │   ├── predict.py          <- Code to run model inference with trained models          
-    │   └── train.py            <- Code to train models
-    │
-    ├── plots.py                <- Code to create visualizations 
-    │
-    └── services                <- Service classes to connect with external platforms, tools, or APIs
-        └── __init__.py 
+```bash
+pip install -r requirements.txt
 ```
 
---------
+## Running the tests
 
-## Zemax Colour Fringe Evaluation
+```bash
+pytest -q
+```
 
-1. Create the Conda environment and activate it:
+## Repository layout
 
-   ```bash
-   conda env create -f environment.yml
-   conda activate masterthesis
-   ```
+```
+├── LICENSE             <- Project license
+├── README.md           <- This file
+├── environment.yml     <- Conda environment description
+├── requirements.txt    <- Minimal pip requirements
+├── notebooks/          <- Example notebooks
+├── reports/            <- Generated analysis results
+├── src/
+│   └── achromatcfw/
+│       ├── core/       <- JIT accelerated CFW routines
+│       ├── io/         <- Data loading utilities
+│       ├── data/       <- Spectral CSV files packaged with the code
+│       └── zemax_utils.py
+└── tests/              <- Pytest unit tests
+```
 
-2. Run the Zemax helper to fetch the chromatic focal shift curve and
-   compute colour fringe metrics:
+## Usage
 
-   ```bash
-   python -m achromatcfw.zemax_utils path/to/system.zmx \
-       --defocus-range 500 --xrange 200 --F 8.0 --gamma 1.0
-   ```
+The Zemax helper can be run directly to fetch the chromatic focal shift curve and
+compute fringe metrics:
 
-The script prints the maximum and mean colour fringe width across the
-specified defocus range.  Use `-h` to see all available options.
+```bash
+python -m achromatcfw.zemax_utils path/to/system.zmx \
+    --defocus-range 500 --xrange 200 --F 8.0 --gamma 1.0
+```
+
+The script prints the maximum and mean colour fringe width for the specified
+defocus range. Use `-h` to see all available options.
