@@ -304,4 +304,5 @@ dependencies:
   - conda-forge/noarch::astropy==7.0.1=pyhd8ed1ab_0
   - conda-forge/noarch::poppy==1.1.1=pyhd8ed1ab_0
   - pytest
+  - comtypes
 prefix: C:\Users\meetf\anaconda3\envs\masterthesis
