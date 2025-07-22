@@ -76,7 +76,7 @@ def fetch_chromatic_focal_shift(
 def fringe_metrics(
     CHLdata: np.ndarray,
     *,
-    defocus_range: int = 1000,
+    defocus_range: int = 650,
     xrange_val: int = 400,
     F: float | None = None,
     gamma: float | None = None,
@@ -141,3 +141,12 @@ if __name__ == "__main__":  # pragma: no cover - CLI helper
         psf_mode=args.psf_mode,
     )
     print(f"Max CFW: {max_w:.2f} px, Mean CFW: {mean_w:.2f} px")
+
+"""
+The defaults for those optical conditions are defined in core/cfw.py.
+
+You can run the helper directly from the command line as shown in the README:
+
+python -m achromatcfw.zemax_utils path/to/system.zmx \
+    --defocus-range 650 --xrange 400 --F 8.0 --gamma 1.0
+"""

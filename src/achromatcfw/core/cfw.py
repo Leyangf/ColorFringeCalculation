@@ -39,7 +39,7 @@ GAMMA_VALUE: float = 1.0
 TOL: float = 0.15         # colour difference tolerance for the binary detector
 XRANGE_VAL: int = 400     # half-width of the evaluation window in pixels
 
-defocusrange: int = 1000  # defocus range of CHL data in microns
+defocusrange: int = 650  # defocus range of CHL data in microns
 
 # Valid PSF modes ----------------------------------------------------------------
 ALLOWED_PSF_MODES: tuple[str, ...] = ("disk", "gauss", "gauss_sphe")
