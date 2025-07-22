@@ -5,10 +5,10 @@ compute colour‑fringe related metrics for an optical system.
 
 Main public entry points
 ------------------------
-- :func:`Edge`            – edge profile for a single colour channel.
-- :func:`Farbsaum`        – *binary* colour‑fringe flag at one pixel.
-- :func:`Farbsaumbreite`  – fringe width (in pixels) across an x‑range.
-- :func:`ColorFringe`     – *actual* RGB edge responses at one pixel.
+- :func:Edge            – edge profile for a single colour channel.
+- :func:Farbsaum        – *binary* colour‑fringe flag at one pixel.
+- :func:Farbsaumbreite  – fringe width (in pixels) across an x‑range.
+- :func:ColorFringe     – *actual* RGB edge responses at one pixel.
 
 Internal helpers are Numba‑compiled for speed; outer wrappers keep type
 safety, parameter validation and sensible defaults.
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from math import erf as math_erf, tanh, sqrt, pi, exp, fabs
-from typing import Literal, Tuple
+from typing import Tuple, Literal
 
 import numpy as np
 from numba import njit
@@ -152,7 +152,7 @@ def Edge(
         Pixel offset and defocus (same units as *CHLdata*).
     F, gamma
         Exposure curve factor and display gamma. If *None*, fall back to
-        :data:`F_VALUE` and :data:`GAMMA_VALUE`.
+        :data:F_VALUE and :data:GAMMA_VALUE.
     CHLdata
         1‑D array with chromatic focal shift curve (µm). Required.
     K_param
