@@ -22,23 +22,32 @@ from typing import Tuple, Literal
 import numpy as np
 from numba import njit
 
+# Import the spectral response curves of the sensor.  ``channel_products``
+# returns wavelength dependent energy terms (S·D) for each colour channel.
 from achromatcfw.io.spectrum_loader import channel_products
 
 # ------------------------------ Global constants ------------------------------
-K: float = 1.4            # f‑number
-F_VALUE: float = 8.0      # over‑exposure factor used in Exposure normalisation
-GAMMA_VALUE: float = 1.0  # default gamma in linear light space
+# Nominal f-number of the optical system.  Used when converting the chromatic
+# focal shift into an equivalent blur radius.
+K: float = 1.4
 
-TOL: float = 0.15         # colour‑difference tolerance for binary method
-XRANGE_VAL: int = 400     # half‑width of evaluation window in pixels (±XRANGE_VAL)
+# Parameters controlling the non-linear exposure curve and gamma used when
+# computing edge responses.
+F_VALUE: float = 8.0
+GAMMA_VALUE: float = 1.0
 
-defocusrange: int = 1000  # defocus range in microns (for CHLdata)
+TOL: float = 0.15         # colour difference tolerance for the binary detector
+XRANGE_VAL: int = 400     # half-width of the evaluation window in pixels
+
+defocusrange: int = 1000  # defocus range of CHL data in microns
 
 # Valid PSF modes ----------------------------------------------------------------
 ALLOWED_PSF_MODES: tuple[str, ...] = ("disk", "gauss", "gauss_sphe")
 DEFAULT_PSF_MODE: Literal["gauss"] = "gauss"
 
 # ------------------------------ Sensor data ------------------------------------
+# Pre-compute the wavelength weighted sensor responses for each channel.  Only
+# the second column (S·D) is needed for the kernel.
 prods = channel_products()
 sensor_map = {
     "R": prods["red"][:, 1],
@@ -102,9 +111,15 @@ def compute_edge_jit(
     psf_mode: Literal["disk", "gauss", "gauss_sphe"],
 ) -> float:
     """Edge response for a single pixel location (low‑level kernel)."""
+
+    # Convert the defocus difference ``z - CHLdata[n]`` to an effective blur
+    # radius.  ``K_param`` is the f-number of the system.  The expression below
+    # is derived from the thin lens approximation.
     denom_factor = sqrt(4.0 * K_param ** 2.0 - 1.0)
 
-    # Integrate contribution across defocus samples ---------------------------
+    # Integrate contribution across all wavelengths / defocus samples.  Each
+    # sample contributes according to the chosen point spread function and the
+    # spectral sensitivity at that wavelength.
     acc = 0.0
     for n in range(CHLdata.size):
         ratio = fabs((z - CHLdata[n]) / denom_factor)
@@ -116,10 +131,15 @@ def compute_edge_jit(
             weight = gauss_ESF_sphe_jit(x, ratio)
         acc += sensor_data[n] * weight
 
+    # ``sensor_data`` encodes the spectral sensitivity.  The denominator normalises
+    # the weighted sum so that absolute sensor gain does not affect the result.
     denom = np.sum(sensor_data)
     if denom == 0.0:
-        return 0.0  # guard against bad calibration data
+        # Avoid division by zero if calibration data is malformed.
+        return 0.0
 
+    # Apply the exposure non-linearity and display gamma to obtain the final
+    # pixel value.  The result is clipped to the [0, 1] range by ``Exposure_jit``.
     return Exposure_jit(acc / denom, F) ** gamma
 
 
@@ -165,6 +185,7 @@ def Edge(
     float
         Normalised edge response in [0, 1].
     """
+    # Validate PSF mode early to provide a clear error for the user.
     if psf_mode not in ALLOWED_PSF_MODES:
         raise ValueError(
             f"psf_mode must be one of {ALLOWED_PSF_MODES}, got {psf_mode!r}")
@@ -172,9 +193,11 @@ def Edge(
     if CHLdata is None:
         raise ValueError("CHLdata array is required (got None)")
 
+    # Use default exposure and gamma values if the caller did not specify them.
     F_val: float = _resolve_param(F, F_VALUE)
     gamma_val: float = _resolve_param(gamma, GAMMA_VALUE)
 
+    # Map the channel name to its spectral sensitivity vector.
     sensor_data = sensor_map[color.upper()]
     return compute_edge_jit(
         float(x), float(z), F_val, gamma_val, sensor_data, CHLdata, K_param, psf_mode
@@ -197,6 +220,8 @@ def Farbsaum(
     if CHLdata is None:
         raise ValueError("CHLdata array is required (got None)")
 
+    # Evaluate the edge response for all three channels and compare their
+    # differences against ``TOL`` to decide if a colour fringe is present.
     r = Edge("R", x, z, F, gamma, CHLdata, psf_mode=psf_mode)
     g = Edge("G", x, z, F, gamma, CHLdata, psf_mode=psf_mode)
     b = Edge("B", x, z, F, gamma, CHLdata, psf_mode=psf_mode)
@@ -214,6 +239,8 @@ def Farbsaumbreite(
     if CHLdata is None:
         raise ValueError("CHLdata array is required (got None)")
 
+    # Scan across the specified range of pixel offsets and count the number of
+    # locations where a fringe is detected.
     xs = np.arange(-XRANGE_VAL, XRANGE_VAL + 1, dtype=np.int32)
     width = 0
     for x in xs:
@@ -230,9 +257,12 @@ def ColorFringe(
     psf_mode: Literal["disk", "gauss", "gauss_sphe"] = DEFAULT_PSF_MODE,
 ) -> Tuple[float, float, float]:
     """RGB edge responses *without* binarisation (diagnostics helper)."""
+    # ``CHLdata`` defines the chromatic focal shift curve.  Without it no
+    # meaningful prediction can be made.
     if CHLdata is None:
         raise ValueError("CHLdata array is required (got None)")
 
+    # Simply return the raw edge responses for inspection.
     return (
         Edge("R", x, z, F, gamma, CHLdata, psf_mode=psf_mode),
         Edge("G", x, z, F, gamma, CHLdata, psf_mode=psf_mode),
