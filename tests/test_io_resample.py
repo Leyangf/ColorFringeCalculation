@@ -1,24 +1,22 @@
 import numpy as np
-
 # Allow running tests without installing the package
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-
 from achromatcfw.io.spectrum_loader import channel_products
 
 
 def test_channel_products_basic():
-    """字典键、形状以及通道间波长一致性"""
+    """Check dictionary keys, shape, and wavelength consistency between channels."""
     prods = channel_products()
     assert set(prods.keys()) == {"blue", "green", "red"}
 
     first_shape = None
     wl_ref = None
     for arr in prods.values():
-        # 每个数组必须是 (N, 2)
+        # Each array must be (N, 2)
         assert arr.ndim == 2 and arr.shape[1] == 2
         if first_shape is None:
             first_shape = arr.shape
@@ -29,7 +27,7 @@ def test_channel_products_basic():
 
 
 def test_integral_normalized():
-    """验证 ∫(S·D) dλ ≈ 1"""
+    """Verify that ∫(S·D) dλ ≈ 1"""
     prods = channel_products()
     for arr in prods.values():
         integral = np.trapz(arr[:, 1], x=arr[:, 0])
@@ -37,7 +35,7 @@ def test_integral_normalized():
 
 
 def test_sensor_peak_independence():
-    """修改 sensor_peak 不应影响归一化后的能量积分"""
+    """Changing sensor_peak should not affect the normalized energy integral."""
     prods1 = channel_products(sensor_peak=1.0)
     prods2 = channel_products(sensor_peak=0.4)
 

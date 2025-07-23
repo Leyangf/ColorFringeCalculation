@@ -1,5 +1,3 @@
-import numpy as np
-
 # Allow running tests without installing the package
 import sys
 from pathlib import Path
