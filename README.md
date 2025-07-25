@@ -10,7 +10,7 @@ Create the Conda environment and activate it:
 
 ```bash
 conda env create -f environment.yml
-conda activate masterthesis
+conda activate thesis
 ```
 
 Alternatively install the minimal requirements with pip:
@@ -33,7 +33,12 @@ pytest -q
 ├── environment.yml     <- Conda environment description
 ├── requirements.txt    <- Minimal pip requirements
 ├── notebooks/          <- Example notebooks
+│   ├── cfw_demo.ipynb                 <- A demo for the core toolbox evaluating CFW
+│   ├── chl_conrady_predict.ipynb      <- Predict CHL curve and give real-time CFW
+│   └── conrady_fit_validate.ipynb     <- Validate the accuracy of Conrady and ACF fit model
 ├── reports/            <- Generated analysis results
+├── references/
+│   └── schott-optical-glass.xlsx
 ├── src/
 │   └── achromatcfw/
 │       ├── core/       <- JIT accelerated CFW routines
@@ -45,13 +50,5 @@ pytest -q
 
 ## Usage
 
-The Zemax helper can be run directly to fetch the chromatic focal shift curve and
-compute fringe metrics:
-
-```bash
-python -m achromatcfw.zemax_utils path/to/system.zmx \
-    --defocus-range 500 --xrange 200 --F 8.0 --gamma 1.0
-```
-
-The script prints the maximum and mean colour fringe width for the specified
-defocus range. Use `-h` to see all available options.
+The Notebooks can be run directly either with given file in database or the predicted 
+CHL data. The Zemax helper is not finished yet.
