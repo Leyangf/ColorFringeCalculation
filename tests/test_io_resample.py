@@ -1,22 +1,24 @@
 import numpy as np
+
 # Allow running tests without installing the package
 import sys
 from pathlib import Path
 
+# 1️⃣ Add src/ to PYTHONPATH so the tests can import local modules
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from achromatcfw.io.spectrum_loader import channel_products
+from chromf.spectrum_loader import channel_products
 
 
 def test_channel_products_basic():
-    """Check dictionary keys, shape, and wavelength consistency between channels."""
+    """Check that keys, array shape, and wavelength grids match across channels."""
     prods = channel_products()
     assert set(prods.keys()) == {"blue", "green", "red"}
 
     first_shape = None
     wl_ref = None
     for arr in prods.values():
-        # Each array must be (N, 2)
+        # Each array must have shape (N, 2): wavelength, spectral product
         assert arr.ndim == 2 and arr.shape[1] == 2
         if first_shape is None:
             first_shape = arr.shape
@@ -27,7 +29,7 @@ def test_channel_products_basic():
 
 
 def test_integral_normalized():
-    """Verify that ∫(S·D) dλ ≈ 1"""
+    """Verify that the integral of S * D over wavelength is approximately one."""
     prods = channel_products()
     for arr in prods.values():
         integral = np.trapz(arr[:, 1], x=arr[:, 0])
@@ -35,7 +37,7 @@ def test_integral_normalized():
 
 
 def test_sensor_peak_independence():
-    """Changing sensor_peak should not affect the normalized energy integral."""
+    """Changing `sensor_peak` must not affect the normalized energy integral."""
     prods1 = channel_products(sensor_peak=1.0)
     prods2 = channel_products(sensor_peak=0.4)
 

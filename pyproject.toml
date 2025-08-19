@@ -3,16 +3,30 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "achromatcfw"
+name = "chromf"                  # 包在 PyPI / pip 中的名字
 version = "0.1.0"
-description = "Achromat CFW utility package"
-readme = ""
+description = "Chromatic color fringing utility package"
+readme = "README.md"             # 建议指向实际的 README
 requires-python = ">=3.9"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-packages = ["achromatcfw"]
-include-package-data = true
+# 如有运行依赖可放这里
+# dependencies = [
+#   "numpy >=1.24",
+#   "scipy",
+#   "pandas",
+# ]
 
+[tool.setuptools]                # ---- setuptools 配置 ----
+package-dir = {"" = "src"}       # 所有包都在 src/ 里
+include-package-data = true      # 让非 *.py 文件随包一起安装
+
+# 让 setuptools 自动在 src/ 下发现所有含 __init__.py 的目录
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# 如需额外打包非 Python 资源（CSV / Excel 等），在这里列举
 [tool.setuptools.package-data]
-achromatcfw = ["data/raw/*.csv"]
+chromf = [
+  "data/raw/*.csv",
+  # "data/*.xlsx",
+]

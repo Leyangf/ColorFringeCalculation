@@ -5,9 +5,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from achromatcfw.io.spectrum_loader import _load_defocus
-from achromatcfw.zemax_utils import fringe_metrics
-
+from chromf.spectrum_loader import _load_defocus
+from chromf.cfw import fringe_metrics
 
 def test_metrics_compute():
     data = _load_defocus()
