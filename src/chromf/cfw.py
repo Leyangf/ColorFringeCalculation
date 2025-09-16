@@ -1,16 +1,13 @@
-from __future__ import annotations
 """
 Achromatic Colour-Fringe Width (CFW)
 ===================================
 
 Numerically efficient prediction of colour fringes caused by
 longitudinal chromatic aberration (LCA).
-
-*2025-08-08 refactor* – removed the deprecated ``gauss_sphe`` PSF mode.
 """
-
+from __future__ import annotations
 from math import erf as _erf, fabs as _fabs, sqrt as _sqrt
-from typing import Dict, Literal, Sequence, Tuple
+from typing import Dict, Literal, Tuple
 
 import numpy as np
 from numba import njit

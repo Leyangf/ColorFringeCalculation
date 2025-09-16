@@ -159,7 +159,7 @@ glass_sellmeier = {
     ),
 }
 
-glass_briot = {
+glass_acf = {
     "F2":       dict(a=0.5994,  b=6.636e3,  c=3.016e8,  d=-3.227e-09),
     "N-BAF10":  dict(a=0.6524,  b=5.987e3,  c=1.706e8,  d=-3.432e-09),
     "N-BAK2":   dict(a=0.5287,  b=4.041e3,  c=6.249e7,  d=-2.808e-09),
