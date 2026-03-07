@@ -189,7 +189,9 @@ def detect_fringe_binary(
     chl_curve_um: np.ndarray,
     f_number: float = DEFAULT_FNUMBER,
     psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
+    color_diff_threshold: float | None = None,
 ) -> int:
+    threshold = COLOR_DIFF_THRESHOLD if color_diff_threshold is None else color_diff_threshold
     r, g, b = edge_rgb_response(
         x_px,
         z_um,
@@ -200,9 +202,9 @@ def detect_fringe_binary(
         psf_mode=psf_mode,
     )
     return int(
-        abs(r - g) > COLOR_DIFF_THRESHOLD
-        or abs(r - b) > COLOR_DIFF_THRESHOLD
-        or abs(g - b) > COLOR_DIFF_THRESHOLD
+        abs(r - g) > threshold
+        or abs(r - b) > threshold
+        or abs(g - b) > threshold
     )
 
 
@@ -215,6 +217,7 @@ def fringe_width(
     f_number: float = DEFAULT_FNUMBER,
     psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
     xrange_val: int | None = None,
+    color_diff_threshold: float | None = None,
 ) -> int:
     half = EDGE_HALF_WINDOW_PX if xrange_val is None else int(xrange_val)
     xs = np.arange(-half, half + 1, dtype=np.int32)
@@ -228,6 +231,7 @@ def fringe_width(
                 chl_curve_um=chl_curve_um,
                 f_number=f_number,
                 psf_mode=psf_mode,
+                color_diff_threshold=color_diff_threshold,
             )
             for x in xs
         )
