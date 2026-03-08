@@ -81,11 +81,13 @@ def _edge_response_jit(
     chl_curve: np.ndarray,
     f_number: float,
     psf_kind: Literal["geom", "gauss"],
+    sa_curve: np.ndarray,   # residual spot radius per wavelength (µm); zeros = no SA
 ) -> float:
     denom = _sqrt(4.0 * f_number**2.0 - 1.0)
     acc = 0.0
     for n in range(chl_curve.size):
-        rho = _fabs((z - chl_curve[n]) / denom)
+        rho_chl = _fabs((z - chl_curve[n]) / denom)
+        rho = _sqrt(rho_chl**2 + sa_curve[n]**2)   # quadrature: defocus ⊕ SA
         if psf_kind == "geom":
             weight = _geom_esf(x, rho)
         else:
@@ -109,6 +111,7 @@ def edge_response(
     exposure_slope: float | None = None,
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
+    sa_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
     psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
 ) -> float:
@@ -123,6 +126,9 @@ def edge_response(
 
     slope = EXPOSURE_SLOPE if exposure_slope is None else float(exposure_slope)
     gamma_val = DISPLAY_GAMMA if gamma is None else float(gamma)
+    sa = (np.zeros_like(chl_curve_um, dtype=np.float64)
+          if sa_curve_um is None
+          else sa_curve_um.astype(np.float64, copy=False))
 
     return _edge_response_jit(
         float(x_px),
@@ -133,6 +139,7 @@ def edge_response(
         chl_curve_um.astype(np.float64, copy=False),
         float(f_number),
         psf_mode,  # type: ignore[arg-type]
+        sa,
     )
 
 
@@ -143,39 +150,28 @@ def edge_rgb_response(
     exposure_slope: float | None = None,
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
+    sa_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
     psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
 ) -> tuple[float, float, float]:
     return (
         edge_response(
-            "R",
-            x_px,
-            z_um,
-            exposure_slope=exposure_slope,
-            gamma=gamma,
-            chl_curve_um=chl_curve_um,
-            f_number=f_number,
-            psf_mode=psf_mode,
+            "R", x_px, z_um,
+            exposure_slope=exposure_slope, gamma=gamma,
+            chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
+            f_number=f_number, psf_mode=psf_mode,
         ),
         edge_response(
-            "G",
-            x_px,
-            z_um,
-            exposure_slope=exposure_slope,
-            gamma=gamma,
-            chl_curve_um=chl_curve_um,
-            f_number=f_number,
-            psf_mode=psf_mode,
+            "G", x_px, z_um,
+            exposure_slope=exposure_slope, gamma=gamma,
+            chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
+            f_number=f_number, psf_mode=psf_mode,
         ),
         edge_response(
-            "B",
-            x_px,
-            z_um,
-            exposure_slope=exposure_slope,
-            gamma=gamma,
-            chl_curve_um=chl_curve_um,
-            f_number=f_number,
-            psf_mode=psf_mode,
+            "B", x_px, z_um,
+            exposure_slope=exposure_slope, gamma=gamma,
+            chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
+            f_number=f_number, psf_mode=psf_mode,
         ),
     )
 
@@ -187,19 +183,17 @@ def detect_fringe_binary(
     exposure_slope: float | None = None,
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
+    sa_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
     psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
     color_diff_threshold: float | None = None,
 ) -> int:
     threshold = COLOR_DIFF_THRESHOLD if color_diff_threshold is None else color_diff_threshold
     r, g, b = edge_rgb_response(
-        x_px,
-        z_um,
-        exposure_slope=exposure_slope,
-        gamma=gamma,
-        chl_curve_um=chl_curve_um,
-        f_number=f_number,
-        psf_mode=psf_mode,
+        x_px, z_um,
+        exposure_slope=exposure_slope, gamma=gamma,
+        chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
+        f_number=f_number, psf_mode=psf_mode,
     )
     return int(
         abs(r - g) > threshold
@@ -214,6 +208,7 @@ def fringe_width(
     exposure_slope: float | None = None,
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
+    sa_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
     psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
     xrange_val: int | None = None,
@@ -229,6 +224,7 @@ def fringe_width(
                 exposure_slope=exposure_slope,
                 gamma=gamma,
                 chl_curve_um=chl_curve_um,
+                sa_curve_um=sa_curve_um,
                 f_number=f_number,
                 psf_mode=psf_mode,
                 color_diff_threshold=color_diff_threshold,
