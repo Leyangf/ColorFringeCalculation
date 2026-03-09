@@ -1,4 +1,4 @@
-name: thesis
+name: chromfringe
 channels:
   - conda-forge
   - defaults
@@ -136,4 +136,4 @@ dependencies:
   - zstd=1.5.7
   - pip:
       - chromf==0.1.0
-prefix: C:\Users\meetf\anaconda3\envs\thesis
+prefix: C:\Users\meetf\anaconda3\envs\chromfringe
