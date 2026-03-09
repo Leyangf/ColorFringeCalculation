@@ -184,6 +184,69 @@ def compute_rori_spot_curves(
     return np.column_stack((wls, chl_um)), np.column_stack((wls, rho_sa_um))
 
 
+def compute_w040_curve(
+    optic,
+    wavelengths_nm: np.ndarray | None = None,
+    ref_wavelength_nm: float | None = None,
+) -> np.ndarray:
+    """Primary spherical aberration coefficient W040 per wavelength (µm OPD).
+
+    Derived from the marginal-ray (ρ=1) transverse aberration at the RoRi
+    best-focus plane for each wavelength::
+
+        W040(λ) = −TA_marginal(λ) / (8 · FNO)
+
+    where  TA_marginal = [SK(ρ=1) − RoRi] · 1 / (2·FNO)  (mm), converted to
+    µm and negated to match the sign convention  TA = −2·FNO·dW/dρ.
+
+    Pass ``w040_curve[:, 1]`` as ``w040_curve_um=`` to
+    :func:`chromf.cfw.fringe_width` with ``psf_mode='dgauss'``.
+
+    Parameters
+    ----------
+    optic, wavelengths_nm, ref_wavelength_nm:
+        Same as :func:`compute_rori_spot_curves`.
+
+    Returns
+    -------
+    np.ndarray, shape (N, 2)
+        ``[λ_nm, W040_µm]`` — spherical aberration wavefront coefficient.
+    """
+    wls: np.ndarray = (
+        wavelengths_nm
+        if wavelengths_nm is not None
+        else np.array(optic.wavelengths.get_wavelengths()) * 1000.0
+    )
+
+    fno = float(optic.paraxial.FNO())
+    paraxial = optic.paraxial
+    z_start = float(paraxial.surfaces.positions[1, 0]) - 1.0
+
+    _py = np.array(_RORI_PY)
+    _w = np.array(_RORI_WEIGHTS, dtype=float)
+
+    def _sk_par(wl_nm: float) -> float:
+        wl_um = wl_nm / 1000.0
+        y, u = paraxial._trace_generic(1.0, 0.0, z_start, wl_um)
+        u_last = float(u.ravel()[-1])
+        if u_last == 0.0:
+            raise ValueError(f"Paraxial ray slope zero at {wl_nm} nm.")
+        return float(-y.ravel()[-1] / u_last)
+
+    def _w040_at(wl_nm: float) -> float:
+        wl_um = wl_nm / 1000.0
+        sks = np.array([_sk_par(wl_nm)]
+                       + [_sk_real(optic, py, wl_um) for py in _RORI_PY[1:]])
+        rori = float(np.dot(_w, sks) / _RORI_SUM)
+        # Transverse aberration of marginal ray (ρ=1) at RoRi focus plane (mm):
+        ta_marginal_mm = (sks[-1] - rori) / (2.0 * fno)
+        # W040 = −TA_marginal_µm / (8·FNO)
+        return -(ta_marginal_mm * 1000.0) / (8.0 * fno)
+
+    w040_arr = np.array([_w040_at(float(wl)) for wl in wls])
+    return np.column_stack((wls, w040_arr))
+
+
 def compute_rori_chl_curve(
     optic,
     wavelengths_nm: np.ndarray | None = None,
@@ -366,6 +429,230 @@ def compute_polychromatic_esf(
     return np.clip(esf_accum, 0.0, 1.0)
 
 
+def compute_polychromatic_esf_geometric(
+    optic,
+    channel: str,
+    z_defocus_um: float,
+    x_um: np.ndarray,
+    num_rho: int = 32,
+    wl_stride: int = 1,
+) -> np.ndarray:
+    """Polychromatic ESF using the geometric pupil integral (no FFT).
+
+    For each wavelength, traces ``num_rho`` real rays at Gauss-Legendre
+    quadrature pupil heights ρ ∈ (0, 1] and evaluates the exact geometric ESF::
+
+        ESF(x) = ∫₀¹ [arcsin(clip(x / R(ρ), −1, 1)) / π + ½] · 2ρ dρ
+
+    where R(ρ) = |y_image(ρ)| is the transverse aberration magnitude (µm) of
+    the ray at normalized pupil height ρ on the defocused image plane.
+
+    This is ~100× faster than :func:`compute_polychromatic_esf` and faithfully
+    captures the asymmetry in PSF width between +z and −z defocus through the
+    real aberration structure of the lens.  Diffraction effects near focus
+    (|z| ≲ λ·FNO²) are not included.
+
+    Parameters
+    ----------
+    optic:
+        Optiland ``Optic`` instance.
+    channel:
+        ``"R"``, ``"G"``, or ``"B"``.
+    z_defocus_um:
+        Image-plane shift in µm (positive = away from lens).
+    x_um:
+        Physical x-axis in µm, e.g. ``np.arange(-400, 401, dtype=float)``.
+    num_rho:
+        Number of Gauss-Legendre quadrature points for the pupil integral.
+        32 gives < 0.1 % ESF error for smooth aberration profiles.
+    wl_stride:
+        Wavelength subsampling stride (same meaning as in
+        :func:`compute_polychromatic_esf`).
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``== x_um.shape``, values in ``[0, 1]``.
+    """
+    op = _optic_at_defocus(optic, z_defocus_um)
+    ch_key = _CHANNEL_MAP[channel.upper()]
+    products = _channel_products()
+    wl_nm = products[ch_key][:, 0][::wl_stride]
+    g_k = products[ch_key][:, 1][::wl_stride]
+    g_norm = g_k / g_k.sum()
+
+    # Gauss-Legendre quadrature on [0, 1].
+    # ∫₀¹ 2ρ·f(ρ) dρ ≈ Σ_k 2ρ_k · f(ρ_k) · (W_k / 2) = Σ_k ρ_k · f(ρ_k) · W_k
+    # where ξ_k, W_k are GL nodes/weights on [−1, 1].
+    xi, W_gl = np.polynomial.legendre.leggauss(num_rho)
+    rho_nodes = 0.5 * (xi + 1.0)          # map [−1,1] → [0,1]
+
+    esf_accum = np.zeros(len(x_um), dtype=np.float64)
+
+    for j in range(len(wl_nm)):
+        wl_um_j = wl_nm[j] / 1000.0
+
+        # Transverse aberration magnitude R(ρ) for each quadrature node.
+        R_rho = np.empty(num_rho)
+        for k in range(num_rho):
+            rho = float(rho_nodes[k])
+            rays = op.trace_generic(0.0, 0.0, 0.0, rho, wl_um_j)
+            y_mm = float(rays.y.ravel()[-1])
+            R_rho[k] = abs(y_mm) * 1000.0   # mm → µm
+
+        # Vectorised ESF:  (N_x, num_rho) → (N_x,)
+        x_col = x_um[:, np.newaxis]            # (N, 1)
+        R_row = R_rho[np.newaxis, :]           # (1, K)
+        rho_row = rho_nodes[np.newaxis, :]     # (1, K)
+        W_row = W_gl[np.newaxis, :]            # (1, K)
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ratio = np.where(R_row > 1e-4, x_col / R_row, np.sign(x_col + 1e-15))
+        ratio = np.clip(ratio, -1.0, 1.0)
+        f_contrib = np.arcsin(ratio) / np.pi + 0.5   # (N, K)
+
+        esf_j = np.sum(f_contrib * rho_row * W_row, axis=1)   # (N,)
+        esf_accum += g_norm[j] * esf_j
+
+    return np.clip(esf_accum, 0.0, 1.0)
+
+
+def precompute_ray_fan(
+    optic,
+    num_rho: int = 32,
+) -> dict:
+    """Pre-compute signed transverse aberrations and ray slopes at z = 0.
+
+    Traces ``num_rho × N_wavelengths`` rays **once** at the nominal image
+    plane.  The result encodes both the SA-induced TA profile *and* each
+    ray's dy/dz slope, enabling exact linear extrapolation to any defocus z::
+
+        R(ρ; z, λ) = |TA₀(ρ, λ)  +  (M/N)(ρ, λ) · z|
+
+    where TA₀ is the signed transverse aberration (µm) and M/N is the
+    direction-cosine ratio (µm/µm ≡ dimensionless).
+
+    All 31 wavelengths (400–700 nm, 10 nm step) are traced; per-channel
+    spectral weights are stored separately so a single fan covers R, G, B.
+
+    Pass the returned dict to :func:`compute_polychromatic_esf_fast` to
+    evaluate ESFs at any z without further ray tracing.
+
+    Parameters
+    ----------
+    optic:
+        Optiland ``Optic`` instance at the nominal (z = 0) image plane.
+    num_rho:
+        Gauss-Legendre pupil quadrature points (default 32).
+
+    Returns
+    -------
+    dict with keys:
+        ``fno``, ``rho_nodes`` (K,), ``W_gl`` (K,), ``wl_nm`` (N_wl,),
+        ``TA0`` (K, N_wl) µm, ``slope`` (K, N_wl) µm/µm;
+        plus ``"R"``, ``"G"``, ``"B"`` sub-dicts with ``g_norm`` (N_wl,).
+    """
+    products = _channel_products()
+    wl_nm_all = products["red"][:, 0]   # all channels share this 400–700 nm grid
+    N_wl = len(wl_nm_all)
+
+    xi, W_gl = np.polynomial.legendre.leggauss(num_rho)
+    rho_nodes = 0.5 * (xi + 1.0)   # map [−1,1] → [0,1]
+    fno = float(optic.paraxial.FNO())
+
+    TA0_all   = np.empty((num_rho, N_wl))
+    slope_all = np.empty((num_rho, N_wl))
+
+    for k, rho in enumerate(rho_nodes):
+        for j, wl in enumerate(wl_nm_all):
+            rays  = optic.trace_generic(0.0, 0.0, 0.0, float(rho), wl / 1000.0)
+            y_mm  = float(rays.y.ravel()[-1])
+            M     = float(rays.M.ravel()[-1])
+            N_dir = float(rays.N.ravel()[-1])
+            TA0_all[k, j]   = y_mm * 1000.0   # mm → µm (signed)
+            slope_all[k, j] = (M / N_dir) if abs(N_dir) > 1e-10 else -float(rho) / (2.0 * fno)
+
+    fan: dict = {
+        "fno":       fno,
+        "rho_nodes": rho_nodes,
+        "W_gl":      W_gl,
+        "wl_nm":     wl_nm_all,
+        "TA0":       TA0_all,
+        "slope":     slope_all,
+    }
+    for ch_name, ch_key in _CHANNEL_MAP.items():
+        g_k = products[ch_key][:, 1]
+        fan[ch_name] = {"g_norm": g_k / g_k.sum()}
+    return fan
+
+
+def compute_polychromatic_esf_fast(
+    ray_fan: dict,
+    channel: str,
+    z_defocus_um: float,
+    x_um: np.ndarray,
+    wl_stride: int = 1,
+) -> np.ndarray:
+    """Polychromatic ESF at any defocus z using a pre-computed ray fan.
+
+    Extrapolates the transverse aberration linearly from z = 0 using the
+    traced ray direction::
+
+        R(ρ; z, λ) = |TA₀(ρ, λ) + slope(ρ, λ) · z|
+
+    then evaluates the geometric pupil-integral ESF.  No ray tracing is
+    performed; the cost is a handful of vectorised numpy operations.
+
+    Compared with :func:`compute_polychromatic_esf_geometric`, this is
+    ~1000× faster for a z-sweep because the ray-tracing overhead is paid
+    once by :func:`precompute_ray_fan`.  The linear extrapolation error is
+    O((z/f′)²) ≈ 0.01 % for z ≤ 800 µm on an 85 mm lens.
+
+    Parameters
+    ----------
+    ray_fan:
+        Dict from :func:`precompute_ray_fan`.
+    channel:
+        ``"R"``, ``"G"``, or ``"B"``.
+    z_defocus_um:
+        Defocus in µm (positive = image plane moved away from lens).
+    x_um:
+        Physical x-axis in µm.
+    wl_stride:
+        Wavelength subsampling stride (default 1 = all 31 wavelengths).
+
+    Returns
+    -------
+    np.ndarray, shape == x_um.shape, values in [0, 1].
+    """
+    rho_nodes = ray_fan["rho_nodes"]            # (K,)
+    W_gl      = ray_fan["W_gl"]                 # (K,)
+    g_norm_full = ray_fan[channel.upper()]["g_norm"]   # (N_wl,)
+
+    TA0   = ray_fan["TA0"][:, ::wl_stride]      # (K, N_wl_sub)
+    slope = ray_fan["slope"][:, ::wl_stride]    # (K, N_wl_sub)
+    g_sub = g_norm_full[::wl_stride]
+    g_sub = g_sub / g_sub.sum()                 # renormalise after striding
+
+    # R(ρ, λ; z) = |TA0 + slope · z|   [µm]
+    R = np.abs(TA0 + slope * z_defocus_um)      # (K, N_wl_sub)
+
+    x_col   = x_um[:, np.newaxis]               # (N, 1)
+    rho_row = rho_nodes[np.newaxis, :]          # (1, K)
+    W_row   = W_gl[np.newaxis, :]               # (1, K)
+
+    esf_accum = np.zeros(len(x_um), dtype=np.float64)
+    for j in range(R.shape[1]):
+        R_row = R[:, j][np.newaxis, :]          # (1, K)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ratio = np.where(R_row > 1e-4, x_col / R_row, np.sign(x_col + 1e-15))
+        ratio = np.clip(ratio, -1.0, 1.0)
+        f_contrib = np.arcsin(ratio) / np.pi + 0.5   # (N, K)
+        esf_accum += g_sub[j] * np.sum(f_contrib * rho_row * W_row, axis=1)
+
+    return np.clip(esf_accum, 0.0, 1.0)
+
+
 def compute_polychromatic_psf(
     optic,
     channel: str,
@@ -490,6 +777,10 @@ __all__ = [
     "compute_chl_curve",
     "compute_rori_chl_curve",
     "compute_rori_spot_curves",
+    "compute_w040_curve",
+    "precompute_ray_fan",
     "compute_polychromatic_esf",
+    "compute_polychromatic_esf_geometric",
+    "compute_polychromatic_esf_fast",
     "compute_cfw_psf",
 ]

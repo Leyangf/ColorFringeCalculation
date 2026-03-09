@@ -30,7 +30,7 @@ DISPLAY_GAMMA: float = 2.2
 COLOR_DIFF_THRESHOLD: float = 0.2
 EDGE_HALF_WINDOW_PX: int = 400
 
-ALLOWED_PSF_MODES: tuple[str, ...] = ("geom", "gauss")
+ALLOWED_PSF_MODES: tuple[str, ...] = ("geom", "gauss", "dgauss")
 DEFAULT_PSF_MODE: Literal["gauss"] = "gauss"
 
 # Pre-compute energy-normalised sensor-response · daylight curves (S·D)
@@ -69,6 +69,78 @@ def _gauss_esf(x: float, rho: float) -> float:
     if rho < 1e-6:
         return 1.0 if x >= 0.0 else 0.0
     return 0.5 * (1.0 + _erf(x / (_sqrt(2.0) * 0.5 * rho)))
+
+
+@njit(cache=True)
+def _dgauss_rms(a: float, c: float, fno: float, rho_lo: float, rho_hi: float) -> float:
+    """RMS of R(ρ) = 4·FNO·ρ·|a + c·ρ²| integrated with weight 2ρ dρ over [rho_lo, rho_hi].
+
+    Analytic result (R² = 16·FNO²·ρ²·(a + c·ρ²)²):
+        σ² = 16·FNO² · [a²·Δρ⁴/2 + 2ac·Δρ⁶/3 + c²·Δρ⁸/4] / (rho_hi² − rho_lo²)
+    where Δρⁿ = rho_hi^n − rho_lo^n.  Uses a = W020, c = 2·W040.
+    """
+    area = rho_hi * rho_hi - rho_lo * rho_lo
+    if area < 1e-12:
+        return 0.0
+    hi2 = rho_hi * rho_hi; hi4 = hi2 * hi2; hi6 = hi4 * hi2; hi8 = hi6 * hi2
+    lo2 = rho_lo * rho_lo; lo4 = lo2 * lo2; lo6 = lo4 * lo2; lo8 = lo6 * lo2
+    num = (a * a * (hi4 - lo4) * 0.5
+           + 2.0 * a * c * (hi6 - lo6) / 3.0
+           + c * c * (hi8 - lo8) * 0.25)
+    return _sqrt(_fabs(16.0 * fno * fno * num / area))
+
+
+@njit(cache=True)
+def _dgauss_esf(x: float, sigma1: float, sigma2: float, w1: float, w2: float) -> float:
+    """ESF for a double-Gaussian PSF: w1·Φ(x/σ1) + w2·Φ(x/σ2)."""
+    s2 = _sqrt(2.0)
+    g1 = (0.5 * (1.0 + _erf(x / (s2 * sigma1)))) if sigma1 > 1e-6 else (1.0 if x >= 0.0 else 0.0)
+    g2 = (0.5 * (1.0 + _erf(x / (s2 * sigma2)))) if sigma2 > 1e-6 else (1.0 if x >= 0.0 else 0.0)
+    return w1 * g1 + w2 * g2
+
+
+@njit(cache=True)
+def _dgauss_edge_response_jit(
+    x: float,
+    z: float,
+    slope: float,
+    gamma: float,
+    sensor: np.ndarray,
+    chl_curve: np.ndarray,   # z_c(λ) in µm — same layout as in _edge_response_jit
+    w040_curve: np.ndarray,  # W040(λ) in µm OPD, from compute_w040_curve()
+    f_number: float,
+) -> float:
+    """Double-Gaussian edge response, integrated over the spectral channel.
+
+    Splits the pupil at the TA-zero zone  ρ_s = √(−W020 / 2W040)  when it
+    exists in (0.05, 0.95); otherwise uses the median-area split ρ_s = 1/√2.
+    Zone 1: ρ ∈ [0, ρ_s];  Zone 2: ρ ∈ [ρ_s, 1].
+    σ_i = RMS of R(ρ) = 4·FNO·ρ·|W020 + 2·W040·ρ²| over zone i.
+    """
+    acc = 0.0
+    norm = 0.0
+    for n in range(sensor.size):
+        W020 = -(z - chl_curve[n]) / (8.0 * f_number * f_number)  # µm OPD
+        c = 2.0 * w040_curve[n]   # R(ρ) = 4·FNO·ρ·|W020 + c·ρ²|
+
+        rho_s = 0.7071067811865476  # default: median-area split √½
+        if _fabs(c) > 1e-10:
+            ratio = -W020 / c       # ρ_s² = −W020 / (2·W040)
+            if 0.0025 < ratio < 0.9025:   # ρ_s ∈ (0.05, 0.95)
+                rho_s = _sqrt(ratio)
+
+        sigma1 = _dgauss_rms(W020, c, f_number, 0.0, rho_s)
+        sigma2 = _dgauss_rms(W020, c, f_number, rho_s, 1.0)
+        w1 = rho_s * rho_s
+        w2 = 1.0 - w1
+
+        acc += sensor[n] * _dgauss_esf(x, sigma1, sigma2, w1, w2)
+        norm += sensor[n]
+
+    if norm == 0.0:
+        return 0.0
+    linear = acc / norm
+    return _exposure_curve(linear, slope) ** gamma
 
 
 @njit(cache=True)
@@ -112,8 +184,9 @@ def edge_response(
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
     sa_curve_um: np.ndarray | None = None,
+    w040_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["geom", "gauss", "dgauss"] = DEFAULT_PSF_MODE,
 ) -> float:
     if psf_mode not in ALLOWED_PSF_MODES:
         raise ValueError(f"psf_mode must be one of {ALLOWED_PSF_MODES}")
@@ -126,20 +199,23 @@ def edge_response(
 
     slope = EXPOSURE_SLOPE if exposure_slope is None else float(exposure_slope)
     gamma_val = DISPLAY_GAMMA if gamma is None else float(gamma)
-    sa = (np.zeros_like(chl_curve_um, dtype=np.float64)
+    chl = chl_curve_um.astype(np.float64, copy=False)
+
+    if psf_mode == "dgauss":
+        if w040_curve_um is None:
+            raise ValueError("w040_curve_um is required for psf_mode='dgauss'")
+        return _dgauss_edge_response_jit(
+            float(x_px), float(z_um), slope, gamma_val,
+            sensor, chl, w040_curve_um.astype(np.float64, copy=False),
+            float(f_number),
+        )
+
+    sa = (np.zeros_like(chl, dtype=np.float64)
           if sa_curve_um is None
           else sa_curve_um.astype(np.float64, copy=False))
-
     return _edge_response_jit(
-        float(x_px),
-        float(z_um),
-        slope,
-        gamma_val,
-        sensor,
-        chl_curve_um.astype(np.float64, copy=False),
-        float(f_number),
-        psf_mode,  # type: ignore[arg-type]
-        sa,
+        float(x_px), float(z_um), slope, gamma_val,
+        sensor, chl, float(f_number), psf_mode, sa,  # type: ignore[arg-type]
     )
 
 
@@ -151,26 +227,30 @@ def edge_rgb_response(
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
     sa_curve_um: np.ndarray | None = None,
+    w040_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["geom", "gauss", "dgauss"] = DEFAULT_PSF_MODE,
 ) -> tuple[float, float, float]:
     return (
         edge_response(
             "R", x_px, z_um,
             exposure_slope=exposure_slope, gamma=gamma,
             chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
+            w040_curve_um=w040_curve_um,
             f_number=f_number, psf_mode=psf_mode,
         ),
         edge_response(
             "G", x_px, z_um,
             exposure_slope=exposure_slope, gamma=gamma,
             chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
+            w040_curve_um=w040_curve_um,
             f_number=f_number, psf_mode=psf_mode,
         ),
         edge_response(
             "B", x_px, z_um,
             exposure_slope=exposure_slope, gamma=gamma,
             chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
+            w040_curve_um=w040_curve_um,
             f_number=f_number, psf_mode=psf_mode,
         ),
     )
@@ -184,8 +264,9 @@ def detect_fringe_binary(
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
     sa_curve_um: np.ndarray | None = None,
+    w040_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["geom", "gauss", "dgauss"] = DEFAULT_PSF_MODE,
     color_diff_threshold: float | None = None,
 ) -> int:
     threshold = COLOR_DIFF_THRESHOLD if color_diff_threshold is None else color_diff_threshold
@@ -193,6 +274,7 @@ def detect_fringe_binary(
         x_px, z_um,
         exposure_slope=exposure_slope, gamma=gamma,
         chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
+        w040_curve_um=w040_curve_um,
         f_number=f_number, psf_mode=psf_mode,
     )
     return int(
@@ -209,8 +291,9 @@ def fringe_width(
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
     sa_curve_um: np.ndarray | None = None,
+    w040_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["geom", "gauss", "dgauss"] = DEFAULT_PSF_MODE,
     xrange_val: int | None = None,
     color_diff_threshold: float | None = None,
 ) -> int:
@@ -225,6 +308,7 @@ def fringe_width(
                 gamma=gamma,
                 chl_curve_um=chl_curve_um,
                 sa_curve_um=sa_curve_um,
+                w040_curve_um=w040_curve_um,
                 f_number=f_number,
                 psf_mode=psf_mode,
                 color_diff_threshold=color_diff_threshold,
