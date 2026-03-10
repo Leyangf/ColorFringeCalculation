@@ -23,6 +23,7 @@ Aberration extraction from Optiland (from optiland_bridge.py):
     compute_chl_curve           Paraxial CHL [λ, µm]
     compute_rori_chl_curve      Aperture-weighted RoRi CHL [λ, µm]
     compute_rori_spot_curves    RoRi CHL + residual SA spot radius
+    compute_sa_poly_curves      Per-wavelength SA polynomial c₃, c₅
     compute_w040_curve          Seidel W040 [λ, µm]
     precompute_ray_fan          Pre-trace ray fan for fast ESF sweeps
     compute_polychromatic_esf               Diffraction ESF (ground truth)
@@ -46,6 +47,7 @@ from chromf.optiland_bridge import (
     compute_chl_curve,
     compute_rori_chl_curve,
     compute_rori_spot_curves,
+    compute_sa_poly_curves,
     compute_w040_curve,
     precompute_ray_fan,
     compute_polychromatic_esf,
@@ -68,6 +70,7 @@ __all__ = [
     "compute_chl_curve",
     "compute_rori_chl_curve",
     "compute_rori_spot_curves",
+    "compute_sa_poly_curves",
     "compute_w040_curve",
     "precompute_ray_fan",
     "compute_polychromatic_esf",

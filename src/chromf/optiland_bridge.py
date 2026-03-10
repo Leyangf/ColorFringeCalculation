@@ -178,6 +178,67 @@ def compute_rori_spot_curves(
     return np.column_stack((wls, chl_um)), np.column_stack((wls, rho_sa_um))
 
 
+def compute_sa_poly_curves(
+    optic,
+    wavelengths_nm: np.ndarray | None = None,
+    ref_wavelength_nm: float | None = None,
+) -> np.ndarray:
+    """Per-wavelength SA polynomial coefficients c₃, c₅ from RoRi pupil data.
+
+    Fits the residual transverse aberration at each wavelength's RoRi best
+    focus to a two-term pupil polynomial::
+
+        TA_SA(ρ, λ) ≈ c₃(λ)·ρ³ + c₅(λ)·ρ⁵
+
+    using the 4 non-trivial RoRi pupil zones (ρ ∈ {√¼, √½, √¾, 1}).
+    This captures both primary (3rd-order) and secondary (5th-order)
+    spherical aberration, giving a wavelength-dependent pupil profile
+    instead of the single-scalar ρ_SA.
+
+    Parameters
+    ----------
+    optic, wavelengths_nm, ref_wavelength_nm:
+        Same as :func:`compute_rori_spot_curves`.
+
+    Returns
+    -------
+    np.ndarray, shape (N, 3)
+        ``[λ_nm, c₃_µm, c₅_µm]`` — polynomial coefficients per wavelength.
+        Use with ``psf_mode='mzd'`` via ``sa_poly_um=result[:, 1:]``.
+    """
+    wls, _ = _resolve_wl_grid(optic, wavelengths_nm, None)
+    fno    = float(optic.paraxial.FNO())
+    denom  = np.sqrt(4.0 * fno * fno - 1.0)
+    paraxial = optic.paraxial
+    z_start  = float(paraxial.surfaces.positions[1, 0]) - 1.0
+
+    _py = np.array(_RORI_PY)
+    _w  = np.array(_RORI_WEIGHTS, dtype=float)
+
+    # Design matrix for least-squares fit: TA = c₃ρ³ + c₅ρ⁵
+    rho_pts = _py[1:]  # 4 non-trivial pupil heights
+    A = np.column_stack([rho_pts**3, rho_pts**5])
+
+    c3_arr = np.empty(len(wls))
+    c5_arr = np.empty(len(wls))
+
+    for i, wl_nm in enumerate(wls):
+        wl_um = float(wl_nm) / 1000.0
+        sks = np.array(
+            [_paraxial_bfl(paraxial, float(wl_nm), z_start)]
+            + [_sk_real(optic, py, wl_um) for py in _RORI_PY[1:]]
+        )
+        rori = float(np.dot(_w, sks) / _RORI_SUM)
+        delta_sk_um = (sks - rori) * 1000.0       # mm → µm
+        ta_sa = delta_sk_um * _py / denom          # TA at RoRi (µm)
+        # Fit c₃, c₅ from the 4 non-trivial points
+        coeffs, _, _, _ = np.linalg.lstsq(A, ta_sa[1:], rcond=None)
+        c3_arr[i] = coeffs[0]
+        c5_arr[i] = coeffs[1]
+
+    return np.column_stack((wls, c3_arr, c5_arr))
+
+
 def compute_w040_curve(
     optic,
     wavelengths_nm: np.ndarray | None = None,
@@ -850,6 +911,7 @@ __all__ = [
     "compute_chl_curve",
     "compute_rori_chl_curve",
     "compute_rori_spot_curves",
+    "compute_sa_poly_curves",
     "compute_w040_curve",
     "precompute_ray_fan",
     "compute_polychromatic_esf",
