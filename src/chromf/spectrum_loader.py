@@ -86,7 +86,7 @@ def _load_sensor(ch: str, model: str = "sonya900") -> Array:
     model
         Camera sensor model identifier used as part of the filename.
         The file ``sensor_{model}_{ch}.csv`` must exist in ``DATA_DIR``.
-        Defaults to ``"nikond700"``.
+        Defaults to ``"sonya900"``.
     """
     return _csv(f"sensor_{model.lower()}_{ch.lower()}")
 
@@ -130,7 +130,7 @@ def channel_products(
         Ordered sequence of colour channel names; the first one defines the
         wavelength grid used for all resampling.
     sensor_model
-        Camera sensor model identifier (default ``"nikond700"``).
+        Camera sensor model identifier (default ``"sonya900"``).
         Files must be named ``sensor_{model}_{channel}.csv`` in ``DATA_DIR``.
         To add a new camera, place the corresponding CSV files in ``data/raw/``
         and pass the model name here (e.g. ``sensor_model="sony_a7r4"``).

@@ -34,9 +34,9 @@ ALLOWED_PSF_MODES: tuple[str, ...] = ("geom", "gauss", "dgauss")
 DEFAULT_PSF_MODE: Literal["gauss"] = "gauss"
 
 # Pre-compute default energy-normalised sensor-response · daylight curves (S·D)
-# for the Leica M8.  Call ``load_sensor_response(model=...)`` to obtain a dict
+# for the Sony a900.  Call ``load_sensor_response(model=...)`` to obtain a dict
 # for a different camera and pass it to the public functions via ``sensor_response=``.
-_prods = _channel_products(sensor_model="nikond700")
+_prods = _channel_products(sensor_model="sonya900")
 SENSOR_RESPONSE: dict[str, np.ndarray] = {
     "R": _prods["red"][:, 1],
     "G": _prods["green"][:, 1],
@@ -44,7 +44,7 @@ SENSOR_RESPONSE: dict[str, np.ndarray] = {
 }
 
 
-def load_sensor_response(model: str = "nikond700") -> dict[str, np.ndarray]:
+def load_sensor_response(model: str = "sonya900") -> dict[str, np.ndarray]:
     """Return an energy-normalised sensor-response dict for *model*.
 
     The dict maps ``"R"``, ``"G"``, ``"B"`` to 1-D NumPy arrays of
@@ -55,7 +55,7 @@ def load_sensor_response(model: str = "nikond700") -> dict[str, np.ndarray]:
     Parameters
     ----------
     model
-        Camera sensor model identifier, e.g. ``"nikond700"`` (default) or a
+        Camera sensor model identifier, e.g. ``"sonya900"`` (default) or a
         custom model such as ``"sony_a7r4"``.
 
     Examples
