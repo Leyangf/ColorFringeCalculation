@@ -12,7 +12,9 @@ ChromFringe provides three complementary ESF (edge-spread function) modelling ap
 
 ```
 ChromFringe/
-├── data/raw/                   ← Spectral CSV files (D65 illuminant, R/G/B sensor QE)
+├── data/
+│   ├── raw/                    ← Spectral CSV files (D65 illuminant, R/G/B sensor QE)
+│   └── lens/                   ← Lens prescription file (ZMX format)
 ├── examples/
 │   ├── cfw_geom_demo.ipynb     ← Main research notebook (geometric / analytic PSF models)
 │   └── cfw_fftpsf_demo.ipynb   ← Validation notebook (FFT diffraction PSF ground truth)
@@ -24,9 +26,10 @@ ChromFringe/
 
 ## Data requirements
 
-The spectral CSV files (`data/raw/`) are bundled in this repository.
+All data files are bundled in this repository:
 
-The **lens prescription file** (`data/lens/`, ZMX format) is excluded from version control due to proprietary content. Place your ZMX file in `data/lens/` and update the path at the top of each notebook accordingly.
+- `data/raw/` — Spectral CSV files (D65 illuminant, R/G/B sensor QE)
+- `data/lens/` — Lens prescription file (ZMX format)
 
 ## Installation
 
