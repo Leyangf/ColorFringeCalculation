@@ -13,12 +13,17 @@ ChromFringe provides three complementary ESF (edge-spread function) modelling ap
 ```
 ChromFringe/
 ├── data/
-│   ├── raw/                    ← Spectral CSV files (D65 illuminant, R/G/B sensor QE)
+│   ├── raw/                    ← Spectral CSV files (D65 illuminant, per-camera sensor QE)
+│   │   ├── daylight_d65.csv
+│   │   ├── sensor_nikond700_{red,green,blue}.csv
+│   │   ├── sensor_sonya900_{red,green,blue}.csv
+│   │   └── defocus_chl_zf85.csv
 │   └── lens/                   ← Lens prescription file (ZMX format)
 ├── examples/
 │   ├── cfw_geom_demo.ipynb     ← Main research notebook (geometric / analytic PSF models)
 │   └── cfw_fftpsf_demo.ipynb   ← Validation notebook (FFT diffraction PSF ground truth)
 └── src/chromf/
+    ├── __init__.py             ← Public API (re-exports 15 functions)
     ├── cfw.py                  ← Core CFW kernels (Numba JIT-compiled)
     ├── spectrum_loader.py      ← Spectral data loading and normalisation
     └── optiland_bridge.py      ← Aberration extraction from Optiland lens models
@@ -28,7 +33,10 @@ ChromFringe/
 
 All data files are bundled in this repository:
 
-- `data/raw/` — Spectral CSV files (D65 illuminant, R/G/B sensor QE)
+- `data/raw/` — Spectral CSV files (D65 illuminant, per-camera sensor QE curves)
+  - Sensor files follow the naming convention `sensor_{model}_{color}.csv` (e.g. `sensor_nikond700_red.csv`)
+  - Bundled sensor models: **Nikon D700** (`nikond700`), **Sony A900** (`sonya900`)
+  - To add a new camera, place `sensor_{model}_{red,green,blue}.csv` in `data/raw/` and pass the model name to the API
 - `data/lens/` — Lens prescription file (ZMX format)
 
 ## Installation
@@ -72,7 +80,10 @@ The primary research notebook. Loads a lens prescription, extracts aberration cu
 Computes polychromatic ESFs from first principles using FFT diffraction propagation. Serves as the ground-truth reference for the geometric models.
 
 **Workflow:**
-1. Bake 75 diffraction ESFs (25 defocus steps × 3 channels) — the expensive one-time step.
+1. **Two-stage PSF baking** — the expensive one-time step, decoupled for efficiency:
+   - *Stage 1 (sensor-independent):* Bake monochromatic ESFs via FFT (25 defocus × 11 wavelengths). Re-run only when optics change.
+   - *Stage 2 (sensor-specific):* Apply spectral weights per channel/camera. Re-run when switching sensor models (microseconds).
+   - This two-stage approach is **3× faster** than baking per-channel, because each wavelength's FFT runs once regardless of the number of sensor models.
 2. Analyse ESF transition widths to locate per-channel best-focus positions.
 3. Compute CFW and per-pair tone differences at exposures 1, 2, 4, 8, 16.
 4. Per-defocus diagnostic grid: raw ESF · tone-mapped ESF · pseudo-density fringe map.
@@ -89,14 +100,15 @@ Low-level numerical kernels for CFW computation. All inner loops are JIT-compile
 | `edge_rgb_response(x_px, z_um, ...)` | R, G, B ESF tuple |
 | `detect_fringe_binary(x_px, z_um, ...)` | 1 if pixel is colour-fringed, else 0 |
 | `fringe_width(z_um, ...)` | Total CFW in µm at the given defocus |
+| `load_sensor_response(model)` | Build an R/G/B spectral-weight dict for a camera model |
 
-All public functions accept `chl_curve_um`, `sa_curve_um`, `w040_curve_um`, `f_number`, `psf_mode`, `exposure_slope`, and `gamma` as keyword arguments.
+All public functions accept `chl_curve_um`, `sa_curve_um`, `w040_curve_um`, `f_number`, `psf_mode`, `exposure_slope`, `gamma`, and `sensor_response` as keyword arguments. Pass a dict from `load_sensor_response()` to switch camera models.
 
 ### `spectrum_loader.py`
 
 Loads and energy-normalises the spectral data so that a perfectly focused flat-spectrum edge produces unity response in every channel.
 
-Key function: `channel_products(daylight_src, channels, sensor_peak)` → dict of normalised S·D products.
+Key function: `channel_products(daylight_src, channels, *, sensor_model, sensor_peak)` → dict of normalised S·D products. The `sensor_model` parameter selects the camera (e.g. `"nikond700"`, `"sonya900"`); sensor CSV files must follow the naming convention `sensor_{model}_{color}.csv`.
 
 ### `optiland_bridge.py`
 
@@ -108,8 +120,14 @@ Extracts aberration inputs from an Optiland `Optic` object:
 | `compute_rori_chl_curve` | Aperture-weighted RoRi CHL [λ, µm] |
 | `compute_rori_spot_curves` | RoRi CHL + residual SA spot radius |
 | `compute_w040_curve` | Seidel W040 [λ, µm] |
+| `precompute_ray_fan` | Pre-traced ray fan for fast z-extrapolation |
 | `compute_polychromatic_esf` | Diffraction ESF (ground truth, slow) |
-| `compute_polychromatic_esf_fast` | Geometric ESF via pre-traced ray fan |
+| `compute_polychromatic_esf_geometric` | Geometric pupil-integral ESF (~100× faster) |
+| `compute_polychromatic_esf_fast` | Ray-fan linear extrapolation ESF (~1000× faster) |
+| `bake_wavelength_esfs` | Sensor-independent monochromatic ESF grid (FFT) |
+| `apply_sensor_weights` | Combine mono ESFs with sensor spectral weights (µs) |
+| `compute_polychromatic_psf` | 2D polychromatic diffraction PSF |
+| `compute_cfw_psf` | CFW computed directly from diffraction PSF |
 
 ## Key concepts
 

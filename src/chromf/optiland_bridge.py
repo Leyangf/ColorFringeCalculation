@@ -294,7 +294,7 @@ def compute_polychromatic_esf(
     grid_size: int = 512,
     strategy: str = "chief_ray",
     wl_stride: int = 1,
-    sensor_model: str = "nikond700",
+    sensor_model: str = "sonya900",
 ) -> np.ndarray:
     """Polychromatic ESF on a physical µm x-axis (correct coordinate accumulation).
 
@@ -506,7 +506,7 @@ def compute_polychromatic_esf_geometric(
     x_um: np.ndarray,
     num_rho: int = 32,
     wl_stride: int = 1,
-    sensor_model: str = "nikond700",
+    sensor_model: str = "sonya900",
 ) -> np.ndarray:
     """Polychromatic ESF using the geometric pupil integral (no FFT).
 
@@ -591,7 +591,7 @@ def compute_polychromatic_esf_geometric(
 def precompute_ray_fan(
     optic,
     num_rho: int = 32,
-    sensor_model: str = "nikond700",
+    sensor_model: str = "sonya900",
 ) -> dict:
     """Pre-compute signed transverse aberrations and ray slopes at z = 0.
 
@@ -732,7 +732,7 @@ def compute_polychromatic_psf(
     num_rays: int = 128,
     grid_size: int = 1024,
     strategy: str = "best_fit_sphere",
-    sensor_model: str = "nikond700",
+    sensor_model: str = "sonya900",
 ) -> tuple[np.ndarray, float]:
     """Compute the polychromatic diffraction PSF for one color channel.
 
