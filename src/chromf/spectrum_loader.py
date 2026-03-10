@@ -11,11 +11,11 @@ Folder layout expected::
     ├── data/
     │   └── raw/
     │       ├── daylight_d65.csv
-    │       ├── sensor_blue.csv
-    │       ├── sensor_green.csv
-    │       ├── sensor_red.csv
+    │       ├── sensor_nikond700_blue.csv
+    │       ├── sensor_nikond700_green.csv
+    │       ├── sensor_nikond700_red.csv
     │       ├── defocus_chl_zf85.csv
-    │       └── ...
+    │       └── ...                        # other models: sensor_{model}_{ch}.csv
     └── src/
         └── chromf/
             └── spectrum_loader.py   ← (this file)
@@ -76,9 +76,19 @@ def _load_daylight(src: str = "d65") -> Array:
     return _csv(f"daylight_{src}")
 
 
-def _load_sensor(ch: str) -> Array:
-    """Return sensor spectral response ``[λ, sensitivity]`` for colour *ch*."""
-    return _csv(f"sensor_{ch.lower()}")
+def _load_sensor(ch: str, model: str = "sonya900") -> Array:
+    """Return sensor spectral response ``[λ, sensitivity]`` for colour *ch*.
+
+    Parameters
+    ----------
+    ch
+        Colour channel name (``"red"``, ``"green"``, or ``"blue"``).
+    model
+        Camera sensor model identifier used as part of the filename.
+        The file ``sensor_{model}_{ch}.csv`` must exist in ``DATA_DIR``.
+        Defaults to ``"nikond700"``.
+    """
+    return _csv(f"sensor_{model.lower()}_{ch.lower()}")
 
 
 # ────────────────────────── Helpers ───────────────────────────────
@@ -107,6 +117,7 @@ def channel_products(
     daylight_src: str = "d65",
     channels: Sequence[str] = ("blue", "green", "red"),
     *,
+    sensor_model: str = "sonya900",
     sensor_peak: float = 1.0,
 ) -> dict[str, Array]:
     """Compute the normalised product S·D for several colour channels.
@@ -116,8 +127,13 @@ def channel_products(
     daylight_src
         Filename stem of the daylight spectrum (default ``"d65"``).
     channels
-        Ordered sequence of sensor file stems; the first one defines the
+        Ordered sequence of colour channel names; the first one defines the
         wavelength grid used for all resampling.
+    sensor_model
+        Camera sensor model identifier (default ``"nikond700"``).
+        Files must be named ``sensor_{model}_{channel}.csv`` in ``DATA_DIR``.
+        To add a new camera, place the corresponding CSV files in ``data/raw/``
+        and pass the model name here (e.g. ``sensor_model="sony_a7r4"``).
     sensor_peak
         Peak amplitude each sensor curve is scaled to *before* energy
         normalisation. Leave at ``1.0`` unless different relative weighting
@@ -132,7 +148,7 @@ def channel_products(
         raise ValueError("`channels` must contain at least one entry.")
 
     # Common wavelength grid from the first sensor file
-    base_sensor = _load_sensor(channels[0])
+    base_sensor = _load_sensor(channels[0], model=sensor_model)
     wl = base_sensor[:, 0]
 
     # Daylight resampled onto the shared grid
@@ -141,7 +157,7 @@ def channel_products(
 
     products: dict[str, Array] = {}
     for ch in channels:
-        sensor_raw = _load_sensor(ch)
+        sensor_raw = _load_sensor(ch, model=sensor_model)
 
         # Rescale sensor curve to a common peak value
         sensor_norm = sensor_raw.copy()
