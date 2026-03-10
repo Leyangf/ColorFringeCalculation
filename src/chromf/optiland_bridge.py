@@ -15,6 +15,43 @@ import numpy as np
 from chromf.spectrum_loader import channel_products as _channel_products
 
 
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+def _resolve_wl_grid(
+    optic,
+    wavelengths_nm: np.ndarray | None,
+    ref_wavelength_nm: float | None,
+) -> tuple[np.ndarray, float]:
+    """Return (wls_nm, ref_wl_nm) from optic defaults when arguments are None."""
+    wls = (
+        wavelengths_nm
+        if wavelengths_nm is not None
+        else np.array(optic.wavelengths.get_wavelengths()) * 1000.0  # µm → nm
+    )
+    ref_wl = (
+        ref_wavelength_nm
+        if ref_wavelength_nm is not None
+        else float(optic.primary_wavelength) * 1000.0  # µm → nm
+    )
+    return wls, ref_wl
+
+
+def _paraxial_bfl(paraxial, wl_nm: float, z_start: float) -> float:
+    """Back focal length (mm) from a paraxial marginal-ray trace at *wl_nm*.
+
+    Raises ValueError if the marginal-ray slope is zero (degenerate optic).
+    """
+    wl_um = wl_nm / 1000.0
+    y, u = paraxial._trace_generic(1.0, 0.0, z_start, wl_um)
+    u_last = float(u.ravel()[-1])
+    if u_last == 0.0:
+        raise ValueError(
+            f"Paraxial marginal ray slope is zero at {wl_nm} nm — "
+            "optic is degenerate (infinite back focal distance)."
+        )
+    return float(-y.ravel()[-1] / u_last)
+
+
 def compute_chl_curve(
     optic,
     wavelengths_nm: np.ndarray | None = None,
@@ -40,37 +77,12 @@ def compute_chl_curve(
         Two-column array ``[λ_nm, CHL_µm]``, identical in format to the
         output of ``spectrum_loader._load_defocus()``.
     """
-    # ── Wavelength grid ───────────────────────────────────────────────
-    wls: np.ndarray = (
-        wavelengths_nm
-        if wavelengths_nm is not None
-        else np.array(optic.wavelengths.get_wavelengths()) * 1000.0  # µm → nm
-    )
-    ref_wl: float = (
-        ref_wavelength_nm
-        if ref_wavelength_nm is not None
-        else float(optic.primary_wavelength) * 1000.0  # µm → nm
-    )
-
-    # ── Back-focal-point helper ───────────────────────────────────────
+    wls, ref_wl = _resolve_wl_grid(optic, wavelengths_nm, ref_wavelength_nm)
     paraxial = optic.paraxial
     z_start = float(paraxial.surfaces.positions[1, 0]) - 1.0
 
-    def _f2_at(wl_nm: float) -> float:
-        """Return signed distance from image plane to paraxial focus (mm) at wl_nm."""
-        wl_um = wl_nm / 1000.0
-        y, u = paraxial._trace_generic(1.0, 0.0, z_start, wl_um)
-        u_last = float(u.ravel()[-1])
-        if u_last == 0.0:
-            raise ValueError(
-                f"Paraxial marginal ray slope is zero at {wl_nm} nm — "
-                "optic is degenerate (infinite back focal distance)."
-            )
-        return float(-y.ravel()[-1] / u_last)
-
-    # ── Compute CHL ───────────────────────────────────────────────────
-    f2_values = np.array([_f2_at(wl) for wl in wls])
-    f2_ref = _f2_at(ref_wl)
+    f2_values = np.array([_paraxial_bfl(paraxial, wl, z_start) for wl in wls])
+    f2_ref = _paraxial_bfl(paraxial, ref_wl, z_start)
     chl_um = (f2_values - f2_ref) * 1000.0  # mm → µm
 
     return np.column_stack((wls, chl_um))
@@ -136,17 +148,7 @@ def compute_rori_spot_curves(
     spot_curve : np.ndarray, shape (N, 2)
         ``[λ_nm, rho_sa_µm]`` — RMS geometric spot radius at best focus.
     """
-    wls: np.ndarray = (
-        wavelengths_nm
-        if wavelengths_nm is not None
-        else np.array(optic.wavelengths.get_wavelengths()) * 1000.0
-    )
-    ref_wl: float = (
-        ref_wavelength_nm
-        if ref_wavelength_nm is not None
-        else float(optic.primary_wavelength) * 1000.0
-    )
-
+    wls, ref_wl = _resolve_wl_grid(optic, wavelengths_nm, ref_wavelength_nm)
     fno      = float(optic.paraxial.FNO())
     paraxial = optic.paraxial
     z_start  = float(paraxial.surfaces.positions[1, 0]) - 1.0
@@ -154,17 +156,9 @@ def compute_rori_spot_curves(
     _py = np.array(_RORI_PY)
     _w  = np.array(_RORI_WEIGHTS, dtype=float)
 
-    def _sk_par(wl_nm: float) -> float:
-        wl_um = wl_nm / 1000.0
-        y, u = paraxial._trace_generic(1.0, 0.0, z_start, wl_um)
-        u_last = float(u.ravel()[-1])
-        if u_last == 0.0:
-            raise ValueError(f"Paraxial marginal ray slope is zero at {wl_nm} nm.")
-        return float(-y.ravel()[-1] / u_last)
-
     def _rori_and_sa(wl_nm: float) -> tuple[float, float]:
         wl_um = wl_nm / 1000.0
-        sks   = np.array([_sk_par(wl_nm)]
+        sks   = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
                          + [_sk_real(optic, py, wl_um) for py in _RORI_PY[1:]])
         rori  = float(np.dot(_w, sks) / _RORI_SUM)                    # mm
         # Transverse position at z = rori of each pupil zone (small-angle)
@@ -212,12 +206,7 @@ def compute_w040_curve(
     np.ndarray, shape (N, 2)
         ``[λ_nm, W040_µm]`` — spherical aberration wavefront coefficient.
     """
-    wls: np.ndarray = (
-        wavelengths_nm
-        if wavelengths_nm is not None
-        else np.array(optic.wavelengths.get_wavelengths()) * 1000.0
-    )
-
+    wls, _ = _resolve_wl_grid(optic, wavelengths_nm, None)
     fno = float(optic.paraxial.FNO())
     paraxial = optic.paraxial
     z_start = float(paraxial.surfaces.positions[1, 0]) - 1.0
@@ -225,17 +214,9 @@ def compute_w040_curve(
     _py = np.array(_RORI_PY)
     _w = np.array(_RORI_WEIGHTS, dtype=float)
 
-    def _sk_par(wl_nm: float) -> float:
-        wl_um = wl_nm / 1000.0
-        y, u = paraxial._trace_generic(1.0, 0.0, z_start, wl_um)
-        u_last = float(u.ravel()[-1])
-        if u_last == 0.0:
-            raise ValueError(f"Paraxial ray slope zero at {wl_nm} nm.")
-        return float(-y.ravel()[-1] / u_last)
-
     def _w040_at(wl_nm: float) -> float:
         wl_um = wl_nm / 1000.0
-        sks = np.array([_sk_par(wl_nm)]
+        sks = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
                        + [_sk_real(optic, py, wl_um) for py in _RORI_PY[1:]])
         rori = float(np.dot(_w, sks) / _RORI_SUM)
         # Transverse aberration of marginal ray (ρ=1) at RoRi focus plane (mm):
@@ -284,42 +265,8 @@ def compute_rori_chl_curve(
         Two-column array ``[λ_nm, RoRi_CHL_µm]``, drop-in compatible with
         :func:`compute_chl_curve` and ``spectrum_loader._load_defocus()``.
     """
-    wls: np.ndarray = (
-        wavelengths_nm
-        if wavelengths_nm is not None
-        else np.array(optic.wavelengths.get_wavelengths()) * 1000.0
-    )
-    ref_wl: float = (
-        ref_wavelength_nm
-        if ref_wavelength_nm is not None
-        else float(optic.primary_wavelength) * 1000.0
-    )
-
-    paraxial = optic.paraxial
-    z_start  = float(paraxial.surfaces.positions[1, 0]) - 1.0
-
-    def _sk_paraxial(wl_nm: float) -> float:
-        wl_um = wl_nm / 1000.0
-        y, u = paraxial._trace_generic(1.0, 0.0, z_start, wl_um)
-        u_last = float(u.ravel()[-1])
-        if u_last == 0.0:
-            raise ValueError(
-                f"Paraxial marginal ray slope is zero at {wl_nm} nm."
-            )
-        return float(-y.ravel()[-1] / u_last)
-
-    def _rori_at(wl_nm: float) -> float:
-        wl_um = wl_nm / 1000.0
-        sks = [_sk_paraxial(wl_nm)] + [
-            _sk_real(optic, py, wl_um) for py in _RORI_PY[1:]
-        ]
-        return sum(w * s for w, s in zip(_RORI_WEIGHTS, sks)) / _RORI_SUM
-
-    rori_values = np.array([_rori_at(wl) for wl in wls])
-    rori_ref    = _rori_at(ref_wl)
-    chl_um      = (rori_values - rori_ref) * 1000.0  # mm → µm
-
-    return np.column_stack((wls, chl_um))
+    chl_curve, _ = compute_rori_spot_curves(optic, wavelengths_nm, ref_wavelength_nm)
+    return chl_curve
 
 
 # ── FFTPSF ground-truth CFW pipeline ─────────────────────────────────────────
