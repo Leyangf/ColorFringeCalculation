@@ -377,6 +377,128 @@ def compute_polychromatic_esf(
     return np.clip(esf_accum, 0.0, 1.0)
 
 
+def bake_wavelength_esfs(
+    optic,
+    z_defocus_um: float,
+    x_um: np.ndarray,
+    wl_nm_arr: np.ndarray,
+    num_rays: int = 256,
+    grid_size: int = 512,
+    strategy: str = "chief_ray",
+) -> np.ndarray:
+    """Compute monochromatic ESFs for an array of wavelengths at one defocus.
+
+    Returns one ESF per wavelength in physical µm space — no sensor or
+    illuminant weighting applied.  Use :func:`apply_sensor_weights` to
+    combine into a polychromatic per-channel ESF.
+
+    Compared with calling :func:`compute_polychromatic_esf` once per
+    channel, calling this once per z and :func:`apply_sensor_weights`
+    per channel is 3× faster (FFT loop runs once per wavelength, not
+    once per wavelength per channel).
+
+    Parameters
+    ----------
+    optic:
+        Optiland ``Optic`` instance.
+    z_defocus_um:
+        Image-plane shift in µm (positive = away from lens).
+    x_um:
+        Physical x-axis in µm, e.g. ``np.arange(-400, 401, dtype=float)``.
+    wl_nm_arr:
+        1-D wavelength array in nm, e.g.
+        ``channel_products(...)["blue"][:, 0][::stride]``.
+    num_rays, grid_size, strategy:
+        Passed to ``FFTPSF`` (same semantics as
+        :func:`compute_polychromatic_esf`).
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(len(wl_nm_arr), len(x_um))``, values in ``[0, 1]``.
+        ``result[j]`` is the monochromatic ESF at ``wl_nm_arr[j]``.
+    """
+    from optiland.psf import FFTPSF  # lazy import
+
+    op = _optic_at_defocus(optic, z_defocus_um)
+    n_wl = len(wl_nm_arr)
+    n_x  = len(x_um)
+    mono_esfs = np.empty((n_wl, n_x), dtype=np.float64)
+    fno: float | None = None
+
+    for j, wl_nm in enumerate(wl_nm_arr):
+        wl_um_j = float(wl_nm) / 1000.0
+        fft_psf = FFTPSF(op, field=(0, 0), wavelength=wl_um_j,
+                         num_rays=num_rays, grid_size=grid_size,
+                         strategy=strategy)
+        if fno is None:
+            fno = float(fft_psf._get_working_FNO())
+
+        Q    = grid_size / (num_rays - 1)
+        dx_j = wl_um_j * fno / Q
+
+        lsf  = fft_psf.psf.sum(axis=0)
+        lsf /= lsf.sum()
+        esf_j = np.cumsum(lsf)
+
+        n   = len(esf_j)
+        x_j = (np.arange(n) - n // 2) * dx_j
+        mono_esfs[j] = np.clip(
+            np.interp(x_um, x_j, esf_j, left=0.0, right=1.0),
+            0.0, 1.0,
+        )
+
+    return mono_esfs
+
+
+def apply_sensor_weights(
+    mono_esfs: np.ndarray,
+    wl_nm_arr: np.ndarray,
+    channel: str,
+    sensor_model: str = "sonya900",
+) -> np.ndarray:
+    """Combine monochromatic ESFs into one polychromatic ESF using sensor weights.
+
+    Pure NumPy — no FFT. Runs in microseconds. Produces the same result as
+    :func:`compute_polychromatic_esf` for the matching channel and sensor model.
+
+    Parameters
+    ----------
+    mono_esfs:
+        Shape ``(n_wl, n_x)`` from :func:`bake_wavelength_esfs`.
+        ``mono_esfs[j]`` is the ESF at ``wl_nm_arr[j]``.
+    wl_nm_arr:
+        1-D wavelength array in nm corresponding to ``mono_esfs`` rows.
+        Must be a strided subset of the sensor CSV wavelength grid
+        (400–700 nm, 10 nm step).
+    channel:
+        ``"R"``, ``"G"``, or ``"B"``.
+    sensor_model:
+        Camera model passed to
+        :func:`~chromf.spectrum_loader.channel_products`.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(n_x,)``, values in ``[0, 1]``.
+    """
+    ch_key   = _CHANNEL_MAP[channel.upper()]
+    products = _channel_products(sensor_model=sensor_model)
+    full_wl  = products[ch_key][:, 0]
+    full_g   = products[ch_key][:, 1]
+
+    idx   = np.searchsorted(full_wl, wl_nm_arr)
+    g_k   = full_g[idx]
+    g_sum = g_k.sum()
+    if g_sum == 0.0:
+        raise ValueError(
+            f"Channel '{channel}' has zero integrated weight for "
+            f"sensor_model='{sensor_model}' on the provided wavelength grid."
+        )
+    g_norm = g_k / g_sum
+    return np.clip(np.dot(g_norm, mono_esfs), 0.0, 1.0)
+
+
 def compute_polychromatic_esf_geometric(
     optic,
     channel: str,
@@ -734,4 +856,6 @@ __all__ = [
     "compute_polychromatic_esf_geometric",
     "compute_polychromatic_esf_fast",
     "compute_cfw_psf",
+    "bake_wavelength_esfs",
+    "apply_sensor_weights",
 ]
