@@ -33,21 +33,18 @@ All data files are bundled in this repository:
 
 ## Installation
 
-Create the Conda environment (recommended — pins exact versions of NumPy, Numba, etc.):
+> **Platform note:** `environment.yml` was exported on Windows and pins Windows-specific runtime packages (`ucrt`, `vc14_runtime`, etc.). It is intended for Windows + Anaconda. Linux / macOS users should install dependencies manually.
+
+Clone the repository and create the Conda environment from the repo root (the `-e .` pip step requires the working directory to be the project root):
 
 ```bash
+git clone https://github.com/Leyangf/ChromFringe.git
+cd ChromFringe
 conda env create -f environment.yml
-conda activate thesis
+conda activate chromfringe
 ```
 
-Or install the minimal requirements with pip:
-
-```bash
-pip install -e .
-pip install -r requirements.txt
-```
-
-[Optiland](https://github.com/HarrisonKramer/optiland) must be installed separately for the `optiland_bridge` module and the example notebooks.
+This installs all pinned dependencies, the `chromf` package in editable mode, and [Optiland](https://github.com/HarrisonKramer/optiland).
 
 ## Research notebooks
 
