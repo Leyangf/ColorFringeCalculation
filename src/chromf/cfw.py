@@ -33,13 +33,42 @@ EDGE_HALF_WINDOW_PX: int = 400
 ALLOWED_PSF_MODES: tuple[str, ...] = ("geom", "gauss", "dgauss")
 DEFAULT_PSF_MODE: Literal["gauss"] = "gauss"
 
-# Pre-compute energy-normalised sensor-response · daylight curves (S·D)
-_prods = _channel_products()
+# Pre-compute default energy-normalised sensor-response · daylight curves (S·D)
+# for the Leica M8.  Call ``load_sensor_response(model=...)`` to obtain a dict
+# for a different camera and pass it to the public functions via ``sensor_response=``.
+_prods = _channel_products(sensor_model="nikond700")
 SENSOR_RESPONSE: dict[str, np.ndarray] = {
     "R": _prods["red"][:, 1],
     "G": _prods["green"][:, 1],
     "B": _prods["blue"][:, 1],
 }
+
+
+def load_sensor_response(model: str = "nikond700") -> dict[str, np.ndarray]:
+    """Return an energy-normalised sensor-response dict for *model*.
+
+    The dict maps ``"R"``, ``"G"``, ``"B"`` to 1-D NumPy arrays of
+    spectral weights (S·D normalised so ∫ S·D dλ = 1).
+
+    CSV files ``data/raw/sensor_{model}_{red|green|blue}.csv`` must exist.
+
+    Parameters
+    ----------
+    model
+        Camera sensor model identifier, e.g. ``"nikond700"`` (default) or a
+        custom model such as ``"sony_a7r4"``.
+
+    Examples
+    --------
+    >>> sr = load_sensor_response("sony_a7r4")
+    >>> w = fringe_width(z_um=50.0, chl_curve_um=chl, sensor_response=sr)
+    """
+    prods = _channel_products(sensor_model=model)
+    return {
+        "R": prods["red"][:, 1],
+        "G": prods["green"][:, 1],
+        "B": prods["blue"][:, 1],
+    }
 
 
 # =============================================================================
@@ -187,10 +216,12 @@ def edge_response(
     w040_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
     psf_mode: Literal["geom", "gauss", "dgauss"] = DEFAULT_PSF_MODE,
+    sensor_response: dict[str, np.ndarray] | None = None,
 ) -> float:
     if psf_mode not in ALLOWED_PSF_MODES:
         raise ValueError(f"psf_mode must be one of {ALLOWED_PSF_MODES}")
-    sensor = SENSOR_RESPONSE[channel.upper()]
+    _sr = SENSOR_RESPONSE if sensor_response is None else sensor_response
+    sensor = _sr[channel.upper()]
     if sensor.shape[0] != chl_curve_um.shape[0]:
         raise ValueError(
             f"Sensor response and CHL curve lengths differ "
@@ -230,6 +261,7 @@ def edge_rgb_response(
     w040_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
     psf_mode: Literal["geom", "gauss", "dgauss"] = DEFAULT_PSF_MODE,
+    sensor_response: dict[str, np.ndarray] | None = None,
 ) -> tuple[float, float, float]:
     return (
         edge_response(
@@ -238,6 +270,7 @@ def edge_rgb_response(
             chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
             w040_curve_um=w040_curve_um,
             f_number=f_number, psf_mode=psf_mode,
+            sensor_response=sensor_response,
         ),
         edge_response(
             "G", x_px, z_um,
@@ -245,6 +278,7 @@ def edge_rgb_response(
             chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
             w040_curve_um=w040_curve_um,
             f_number=f_number, psf_mode=psf_mode,
+            sensor_response=sensor_response,
         ),
         edge_response(
             "B", x_px, z_um,
@@ -252,6 +286,7 @@ def edge_rgb_response(
             chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
             w040_curve_um=w040_curve_um,
             f_number=f_number, psf_mode=psf_mode,
+            sensor_response=sensor_response,
         ),
     )
 
@@ -268,6 +303,7 @@ def detect_fringe_binary(
     f_number: float = DEFAULT_FNUMBER,
     psf_mode: Literal["geom", "gauss", "dgauss"] = DEFAULT_PSF_MODE,
     color_diff_threshold: float | None = None,
+    sensor_response: dict[str, np.ndarray] | None = None,
 ) -> int:
     threshold = COLOR_DIFF_THRESHOLD if color_diff_threshold is None else color_diff_threshold
     r, g, b = edge_rgb_response(
@@ -276,6 +312,7 @@ def detect_fringe_binary(
         chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
         w040_curve_um=w040_curve_um,
         f_number=f_number, psf_mode=psf_mode,
+        sensor_response=sensor_response,
     )
     return int(
         abs(r - g) > threshold
@@ -296,6 +333,7 @@ def fringe_width(
     psf_mode: Literal["geom", "gauss", "dgauss"] = DEFAULT_PSF_MODE,
     xrange_val: int | None = None,
     color_diff_threshold: float | None = None,
+    sensor_response: dict[str, np.ndarray] | None = None,
 ) -> int:
     half = EDGE_HALF_WINDOW_PX if xrange_val is None else int(xrange_val)
     xs = np.arange(-half, half + 1, dtype=np.int32)
@@ -312,6 +350,7 @@ def fringe_width(
                 f_number=f_number,
                 psf_mode=psf_mode,
                 color_diff_threshold=color_diff_threshold,
+                sensor_response=sensor_response,
             )
             for x in xs
         )

@@ -294,6 +294,7 @@ def compute_polychromatic_esf(
     grid_size: int = 512,
     strategy: str = "chief_ray",
     wl_stride: int = 1,
+    sensor_model: str = "nikond700",
 ) -> np.ndarray:
     """Polychromatic ESF on a physical µm x-axis (correct coordinate accumulation).
 
@@ -344,7 +345,7 @@ def compute_polychromatic_esf(
     from optiland.psf import FFTPSF  # lazy import — keeps module loadable without optiland.psf
     op = _optic_at_defocus(optic, z_defocus_um)
     ch_key = _CHANNEL_MAP[channel.upper()]
-    products = _channel_products()
+    products = _channel_products(sensor_model=sensor_model)
     wl_nm  = products[ch_key][:, 0][::wl_stride]   # nm, subsampled
     g_k    = products[ch_key][:, 1][::wl_stride]   # spectral density, subsampled
     g_norm = g_k / g_k.sum()                        # normalise to discrete sum = 1
@@ -383,6 +384,7 @@ def compute_polychromatic_esf_geometric(
     x_um: np.ndarray,
     num_rho: int = 32,
     wl_stride: int = 1,
+    sensor_model: str = "nikond700",
 ) -> np.ndarray:
     """Polychromatic ESF using the geometric pupil integral (no FFT).
 
@@ -423,7 +425,7 @@ def compute_polychromatic_esf_geometric(
     """
     op = _optic_at_defocus(optic, z_defocus_um)
     ch_key = _CHANNEL_MAP[channel.upper()]
-    products = _channel_products()
+    products = _channel_products(sensor_model=sensor_model)
     wl_nm = products[ch_key][:, 0][::wl_stride]
     g_k = products[ch_key][:, 1][::wl_stride]
     g_norm = g_k / g_k.sum()
@@ -467,6 +469,7 @@ def compute_polychromatic_esf_geometric(
 def precompute_ray_fan(
     optic,
     num_rho: int = 32,
+    sensor_model: str = "nikond700",
 ) -> dict:
     """Pre-compute signed transverse aberrations and ray slopes at z = 0.
 
@@ -499,7 +502,7 @@ def precompute_ray_fan(
         ``TA0`` (K, N_wl) µm, ``slope`` (K, N_wl) µm/µm;
         plus ``"R"``, ``"G"``, ``"B"`` sub-dicts with ``g_norm`` (N_wl,).
     """
-    products = _channel_products()
+    products = _channel_products(sensor_model=sensor_model)
     wl_nm_all = products["red"][:, 0]   # all channels share this 400–700 nm grid
     N_wl = len(wl_nm_all)
 
@@ -607,6 +610,7 @@ def compute_polychromatic_psf(
     num_rays: int = 128,
     grid_size: int = 1024,
     strategy: str = "best_fit_sphere",
+    sensor_model: str = "nikond700",
 ) -> tuple[np.ndarray, float]:
     """Compute the polychromatic diffraction PSF for one color channel.
 
@@ -617,7 +621,7 @@ def compute_polychromatic_psf(
     op = _optic_at_defocus(optic, z_defocus_um)
 
     ch_key = _CHANNEL_MAP[channel.upper()]
-    products = _channel_products()
+    products = _channel_products(sensor_model=sensor_model)
     wl_nm = products[ch_key][:, 0]  # shape (31,)
     g_k = products[ch_key][:, 1]    # shape (31,)
 

@@ -14,6 +14,10 @@ Spectral data (from spectrum_loader.py):
 
     channel_products        Energy-normalised S·D products for R, G, B channels
 
+Sensor selection (from cfw.py):
+
+    load_sensor_response    Build an R/G/B sensor-response dict for any camera model
+
 Aberration extraction from Optiland (from optiland_bridge.py):
 
     compute_chl_curve           Paraxial CHL [λ, µm]
@@ -31,6 +35,7 @@ from chromf.cfw import (
     edge_response,
     edge_rgb_response,
     detect_fringe_binary,
+    load_sensor_response,
 )
 
 from chromf.spectrum_loader import channel_products
@@ -52,6 +57,7 @@ __all__ = [
     "edge_response",
     "edge_rgb_response",
     "detect_fringe_binary",
+    "load_sensor_response",
     # spectrum_loader
     "channel_products",
     # optiland_bridge
