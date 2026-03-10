@@ -28,6 +28,8 @@ Aberration extraction from Optiland (from optiland_bridge.py):
     compute_polychromatic_esf               Diffraction ESF (ground truth)
     compute_polychromatic_esf_geometric     Geometric pupil-integral ESF
     compute_polychromatic_esf_fast          Geometric ESF via pre-traced ray fan
+    bake_wavelength_esfs        Sensor-independent monochromatic ESF baking
+    apply_sensor_weights        Apply sensor spectral weights to baked ESFs
 """
 
 from chromf.cfw import (
@@ -49,6 +51,8 @@ from chromf.optiland_bridge import (
     compute_polychromatic_esf,
     compute_polychromatic_esf_geometric,
     compute_polychromatic_esf_fast,
+    bake_wavelength_esfs,
+    apply_sensor_weights,
 )
 
 __all__ = [
@@ -69,4 +73,6 @@ __all__ = [
     "compute_polychromatic_esf",
     "compute_polychromatic_esf_geometric",
     "compute_polychromatic_esf_fast",
+    "bake_wavelength_esfs",
+    "apply_sensor_weights",
 ]
