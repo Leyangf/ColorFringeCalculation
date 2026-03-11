@@ -30,7 +30,7 @@ created: 2026-03-10
   - [[#6.4 Seidel W040 Spherical Aberration Coefficient]]
   - [[#6.5 ESF Model: Pillbox (Geometric Uniform Disc)]]
   - [[#6.6 ESF Model: Gaussian PSF]]
-  - [[#6.7 ESF Model: Double-Gaussian]]
+  - [[#6.7 ESF Model: Multi-Zone Defocus (MZD)]]
   - [[#6.8 Geometric Pupil Integral (Gauss-Legendre)]]
   - [[#6.9 Ray-Fan Linear Extrapolation]]
   - [[#6.10 FFT Fraunhofer Diffraction PSF]]
@@ -64,7 +64,7 @@ $$\text{Scene (knife-edge)} \;\xrightarrow{D_{65}}\; \text{Illuminant} \;\xright
 | 0 | FFT diffraction PSF (ground truth) | ~1 s/ESF | Includes diffraction effects |
 | 1 | Geometric pupil integral (Gauss-Legendre) | ~10 ms/ESF | Geometrically exact |
 | 2 | Ray-fan linear extrapolation (precomputed fan) | <1 ms/ESF | Linear error O((z/f')²) |
-| 3 | Analytic ESF models (Pillbox/Gauss/DGauss) | <0.01 ms/ESF | Parametric approximation |
+| 3 | Analytic ESF models (Pillbox/Gauss/MZD) | <0.01 ms/ESF | Parametric approximation |
 
 ### 1.3 Test Lens
 
@@ -95,7 +95,7 @@ ChromFringe/
 │   ├── cfw_fftpsf_demo.ipynb               ← FFT diffraction PSF baseline notebook
 │   └── cfw_geom_demo.ipynb                 ← Geometric/analytic PSF model notebook
 ├── src/chromf/
-│   ├── __init__.py                         ← Public API exports (15 functions)
+│   ├── __init__.py                         ← Public API exports (16 functions)
 │   ├── cfw.py                              ← JIT-compiled CFW core kernels
 │   ├── spectrum_loader.py                  ← Spectral data loading & normalisation
 │   └── optiland_bridge.py                  ← Aberration extraction + PSF computation
@@ -118,7 +118,7 @@ graph TD
     SL["spectrum_loader.py\nchannel_products(sensor_model=...)"]
     OB["optiland_bridge.py\nAberration extraction + ESF\n+ bake/apply two-stage"]
     CFW["cfw.py\nJIT ESF core\n+ load_sensor_response()"]
-    INIT["__init__.py\nPublic API (15 functions)"]
+    INIT["__init__.py\nPublic API (16 functions)"]
     NB1["cfw_fftpsf_demo.ipynb\nFFT Ground Truth"]
     NB2["cfw_geom_demo.ipynb\nGeometric/Analytic Models"]
     OPT["optiland\n(third-party)"]
@@ -145,7 +145,7 @@ chromf/__init__.py
   │           └── spectrum_loader.py → pandas (CSV I/O), scipy (CubicSpline)
   ├── from chromf.spectrum_loader import channel_products
   └── from chromf.optiland_bridge import compute_chl_curve, compute_rori_chl_curve,
-        compute_rori_spot_curves, compute_w040_curve, precompute_ray_fan,
+        compute_rori_spot_curves, compute_sa_poly_curves, compute_w040_curve, precompute_ray_fan,
         compute_polychromatic_esf, compute_polychromatic_esf_geometric,
         compute_polychromatic_esf_fast, bake_wavelength_esfs, apply_sensor_weights
           ├── from chromf.spectrum_loader import channel_products
@@ -228,7 +228,7 @@ Static comparison experiments (5a: PSF model | 5b: aberration accuracy | 5c: ful
 
 ### 5.1 `chromf/__init__.py` — Public API
 
-`src/chromf/__init__.py` is the sole external-facing interface layer, exporting the following functions:
+`src/chromf/__init__.py` is the sole external-facing interface layer, exporting 16 functions:
 
 #### CFW Core Functions (from `cfw.py`)
 
@@ -258,6 +258,7 @@ from chromf import (
     compute_chl_curve,              # Paraxial CHL curve
     compute_rori_chl_curve,         # Aperture-weighted RoRi CHL
     compute_rori_spot_curves,       # RoRi CHL + residual SA blur
+    compute_sa_poly_curves,         # SA polynomial coefficients c₃, c₅ per wavelength
     compute_w040_curve,             # Seidel W040 coefficient
     precompute_ray_fan,             # Precompute ray fan
     compute_polychromatic_esf,      # FFT diffraction ESF (ground truth)
@@ -317,7 +318,7 @@ def channel_products(
 
 ### 5.3 `cfw.py` — JIT-Compiled Core Kernels
 
-**File path:** `src/chromf/cfw.py` (358 lines)
+**File path:** `src/chromf/cfw.py` (336 lines)
 
 #### Module-Level Constants
 
@@ -327,7 +328,7 @@ EXPOSURE_SLOPE: float = 8.0         # Tone curve slope
 DISPLAY_GAMMA: float = 2.2          # sRGB Gamma
 COLOR_DIFF_THRESHOLD: float = 0.2   # Fringe visibility threshold
 EDGE_HALF_WINDOW_PX: int = 400      # Scan half-window (pixels)
-ALLOWED_PSF_MODES = ("geom", "gauss", "dgauss")
+ALLOWED_PSF_MODES = ("geom", "gauss", "mzd")
 DEFAULT_PSF_MODE = "gauss"
 ```
 
@@ -360,10 +361,8 @@ def load_sensor_response(model: str = "nikond700") -> dict[str, np.ndarray]:
 | `_exposure_curve(x, slope)` | 48–51 | `tanh` tone curve, mapped to [0,1] |
 | `_geom_esf(x, rho)` | 54–63 | Uniform disc (Pillbox) ESF |
 | `_gauss_esf(x, rho)` | 66–71 | Gaussian PSF ESF (σ ≈ 0.5ρ) |
-| `_dgauss_rms(a, c, fno, rho_lo, rho_hi)` | 74–90 | Double-Gaussian zone RMS (analytic) |
-| `_dgauss_esf(x, σ₁, σ₂, w₁, w₂)` | 93–99 | Double-Gaussian ESF |
-| `_dgauss_edge_response_jit(x, z, ...)` | 102–143 | Double-Gaussian channel integration kernel |
-| `_edge_response_jit(x, z, ...)` | 146–172 | Pillbox/Gaussian channel integration kernel |
+| `_edge_response_jit(x, z, ...)` | 74–110 | Pillbox/Gaussian channel integration kernel |
+| `_mzd_edge_response_jit(x, z, ...)` | 112–175 | Multi-Zone Defocus kernel: arcsin ring ESF + Gauss-Legendre pupil integration |
 
 #### Public API
 
@@ -377,9 +376,9 @@ def edge_response(
     gamma: float | None = None,            # Default DISPLAY_GAMMA=2.2
     chl_curve_um: np.ndarray,             # Shape (31,), CHL(λ) µm
     sa_curve_um: np.ndarray | None = None, # Shape (31,), ρ_sa(λ) µm
-    w040_curve_um: np.ndarray | None = None, # Required for dgauss mode
+    w040_curve_um: np.ndarray | None = None, # Legacy; MZD mode uses sa_curve_um directly
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss", "dgauss"] = "gauss",
+    psf_mode: Literal["geom", "gauss", "mzd"] = "gauss",
     sensor_response: dict[str, np.ndarray] | None = None,  # Default Nikon D700
 ) -> float  # Return value ∈ [0, 1], tone-mapped ESF value
 ```
@@ -413,7 +412,7 @@ def fringe_width(
 
 ### 5.4 `optiland_bridge.py` — Aberration Extraction & PSF Computation
 
-**File path:** `src/chromf/optiland_bridge.py` (862 lines)
+**File path:** `src/chromf/optiland_bridge.py` (923 lines)
 
 #### Shared Constants
 
@@ -462,6 +461,15 @@ def compute_rori_spot_curves(
 ) -> tuple[np.ndarray, np.ndarray]
 # Returns: (chl_curve [N,2], spot_curve [N,2])
 # spot_curve[:,1] = ρ_sa(λ), µm, i.e. RMS residual spot radius
+```
+
+```python
+def compute_sa_poly_curves(
+    optic, wavelengths_nm=None, ref_wavelength_nm=None,
+) -> np.ndarray  # Shape (N, 3): [λ_nm, c₃_µm, c₅_µm]
+# Per-wavelength SA polynomial: TA_SA(ρ,λ) ≈ c₃(λ)·ρ³ + c₅(λ)·ρ⁵
+# Captures both primary (3rd-order) and secondary (5th-order) SA
+# Use with psf_mode='mzd' via sa_poly_um=result[:, 1:]
 ```
 
 ```python
@@ -788,70 +796,71 @@ def _gauss_esf(x: float, rho: float) -> float:
 
 ---
 
-### 6.7 ESF Model: Double-Gaussian
+### 6.7 ESF Model: Multi-Zone Defocus (MZD)
 
 #### 6.7.1 Physical Motivation
 
-Spherical aberration causes different aperture zones to focus at different axial positions. The wavefront can be written as:
+Spherical aberration causes different aperture zones to focus at different axial positions. Unlike the simple single-scalar ρ_sa model, MZD explicitly resolves the pupil-dependent blur by integrating over Gauss-Legendre pupil nodes, where each node contributes an arcsin ring ESF with a radius that combines defocus and SA in quadrature.
 
-$$W(\rho; z, \lambda) = W_{020} \cdot \rho^2 + W_{040} \cdot \rho^4$$
+#### 6.7.2 Per-Ring Blur Radius
 
-Transverse aberration:
+For each wavelength $\lambda$ and Gauss-Legendre pupil node $\rho_k$, the blur radius combines CHL defocus and primary SA:
 
-$$\mathrm{TA}(\rho) = -2N\left(2W_{020}\rho + 4W_{040}\rho^3\right) = -4N\rho(W_{020} + 2W_{040}\rho^2) \equiv 4N\rho|a + c\rho^2|$$
+$$\rho_\text{CHL} = \frac{|z - \mathrm{CHL}(\lambda)|}{\sqrt{4N^2 - 1}}$$
 
-where $a = W_{020}$, $c = 2W_{040}$. When $a/c < 0$, $\mathrm{TA}$ has a zero crossing at:
+$$\mathrm{TA}_\text{SA} = \rho_k^3 \cdot 2 \cdot \rho_\text{SA}(\lambda)$$
 
-$$\rho_s = \sqrt{-\frac{W_{020}}{2W_{040}}} = \sqrt{-\frac{a}{c}}$$
+$$\boxed{R_k = \sqrt{(\rho_k \cdot \rho_\text{CHL})^2 + \mathrm{TA}_\text{SA}^2}}$$
 
-splitting the pupil into two zones:
-- **Zone 1 (inner):** $\rho \in [0, \rho_s]$, area weight $w_1 = \rho_s^2$
-- **Zone 2 (outer):** $\rho \in [\rho_s, 1]$, area weight $w_2 = 1 - \rho_s^2$
+The factor of 2 converts the RMS SA to an approximate marginal-ray value ($\times 2 \approx$ RMS→marginal).
 
-If no valid zero crossing exists, $\rho_s = 1/\sqrt{2}$ (equal-area split) is used.
+#### 6.7.3 Arcsin Ring ESF
 
-Implementation (`cfw.py` lines 126–130):
+The per-ring ESF is the exact geometric result for a thin annulus of radius $R$:
+
+$$\boxed{\mathrm{ESF}_\text{ring}(x;\,R) = \frac{\arcsin\!\left(\mathrm{clip}\!\left(\dfrac{x}{R},\,-1,\,1\right)\right)}{\pi} + \frac{1}{2}}$$
+
+#### 6.7.4 Pupil Integration
+
+The full ESF integrates over the pupil with area weights:
+
+$$\mathrm{ESF}_\text{MZD}(x;\,z,\lambda) = \sum_k \rho_k \cdot W_k \cdot \mathrm{ESF}_\text{ring}(x;\,R_k)$$
+
+where $\rho_k, W_k$ are Gauss-Legendre nodes and weights on $[0, 1]$.
+
+Implementation (`cfw.py` lines 112–175):
 ```python
-rho_s = 0.7071067811865476  # Default √½
-if _fabs(c) > 1e-10:
-    ratio = -W020 / c   # rho_s² = -W020 / (2·W040)
-    if 0.0025 < ratio < 0.9025:  # rho_s ∈ (0.05, 0.95)
-        rho_s = _sqrt(ratio)
+def _mzd_edge_response_jit(x, z, slope, gamma, sensor, chl_curve,
+                            f_number, sa_curve, rho_gl, w_gl):
+    for n in range(sensor.size):
+        rho_chl = _fabs((z - chl_curve[n]) / denom)
+        sa = sa_curve[n]
+        for k in range(n_rho):
+            rk = rho_gl[k]
+            sa_zone = rk * rk * rk * 2.0 * sa   # TA_SA ∝ ρ³
+            R = _sqrt((rk * rho_chl) ** 2 + sa_zone * sa_zone)
+            # arcsin ring ESF
+            f_val = _asin(clip(x / R, -1, 1)) / PI + 0.5
+            wl_contrib += rk * w_gl[k] * f_val
+        acc += sensor[n] * wl_contrib / wl_norm
 ```
 
-#### 6.7.2 Per-Zone RMS Blur Computation
+#### 6.7.5 SA Polynomial Coefficients
 
-In the region $[\rho_\text{lo}, \rho_\text{hi}]$, with pupil area weight $2\rho\,d\rho$ and blur radius $R(\rho) = 4N\rho|a + c\rho^2|$, integrate $R^2 = 16N^2\rho^2(a+c\rho^2)^2$ with area weighting:
+The `compute_sa_poly_curves` function fits the residual transverse aberration at each wavelength's RoRi best focus to a two-term pupil polynomial:
 
-$$\sigma_i^2 = \frac{\int_{\rho_\text{lo}}^{\rho_\text{hi}} 16N^2\rho^2(a+c\rho^2)^2 \cdot 2\rho\,d\rho}{\int_{\rho_\text{lo}}^{\rho_\text{hi}} 2\rho\,d\rho}$$
+$$\mathrm{TA}_\text{SA}(\rho, \lambda) \approx c_3(\lambda) \cdot \rho^3 + c_5(\lambda) \cdot \rho^5$$
 
-Expanding $(a + c\rho^2)^2 = a^2 + 2ac\rho^2 + c^2\rho^4$ and integrating term by term yields the analytic result:
+using the 4 non-trivial RoRi pupil zones ($\rho \in \{\sqrt{1/4}, \sqrt{1/2}, \sqrt{3/4}, 1\}$). This captures both primary (3rd-order) and secondary (5th-order) spherical aberration.
 
-$$\boxed{\sigma_i^2 = \frac{16N^2\left[a^2\dfrac{\Delta\rho^4}{2} + 2ac\dfrac{\Delta\rho^6}{3} + c^2\dfrac{\Delta\rho^8}{4}\right]}{\rho_\text{hi}^2 - \rho_\text{lo}^2}}$$
-
-where $\Delta\rho^n = \rho_\text{hi}^n - \rho_\text{lo}^n$.
-
-Implementation (`cfw.py` lines 74–90):
+Implementation (`optiland_bridge.py` lines 181–239):
 ```python
-num = (a * a * (hi4 - lo4) * 0.5
-       + 2.0 * a * c * (hi6 - lo6) / 3.0
-       + c * c * (hi8 - lo8) * 0.25)
-return _sqrt(_fabs(16.0 * fno * fno * num / area))
+A = np.column_stack([rho_pts**3, rho_pts**5])      # Design matrix
+coeffs, _, _, _ = np.linalg.lstsq(A, ta_sa[1:], rcond=None)
+c3_arr[i], c5_arr[i] = coeffs[0], coeffs[1]
 ```
 
-#### 6.7.3 Double-Gaussian ESF
-
-$$\boxed{\mathrm{ESF}_\text{dgauss}(x) = w_1 \cdot \Phi\!\left(\frac{x}{\sigma_1}\right) + w_2 \cdot \Phi\!\left(\frac{x}{\sigma_2}\right)}$$
-
-where $\Phi(t) = \frac{1}{2}\left[1 + \mathrm{erf}\!\left(\dfrac{t}{\sqrt{2}}\right)\right]$ is the standard normal CDF.
-
-Implementation (`cfw.py` lines 93–99):
-```python
-def _dgauss_esf(x, sigma1, sigma2, w1, w2):
-    g1 = 0.5 * (1.0 + _erf(x / (s2 * sigma1)))
-    g2 = 0.5 * (1.0 + _erf(x / (s2 * sigma2)))
-    return w1 * g1 + w2 * g2
-```
+**Measured values (Nikon 85mm f/2):** c₃ ∈ [24.5, 46.6] µm, c₅ ∈ [−101.7, −57.7] µm.
 
 ---
 
@@ -1144,7 +1153,7 @@ Each row shows one z-value across three columns:
 
 ### 7.2 `cfw_geom_demo.ipynb` — Geometric/Analytic Model Validation
 
-**Purpose:** Use analytic PSF models (Pillbox/Gaussian/Double-Gaussian) and geometric integration methods to predict CFW from RoRi aberration curves, comparing against the ray-fan ground truth.
+**Purpose:** Use analytic PSF models (Pillbox/Gaussian/MZD) and geometric integration methods to predict CFW from RoRi aberration curves, comparing against the ray-fan ground truth.
 
 #### Workflow
 
@@ -1155,6 +1164,7 @@ Each row shows one z-value across three columns:
 ```python
 paraxial_curve     = compute_chl_curve(lens1, wavelengths_nm=sensor_wl)
 rori_curve, spot_curve = compute_rori_spot_curves(lens1, wavelengths_nm=sensor_wl)
+sa_poly_curve      = compute_sa_poly_curves(lens1, wavelengths_nm=sensor_wl)
 w040_curve         = compute_w040_curve(lens1, wavelengths_nm=sensor_wl)
 ray_fan            = precompute_ray_fan(lens1)
 # → 32 ρ nodes × 31 wavelengths
@@ -1163,6 +1173,8 @@ ray_fan            = precompute_ray_fan(lens1)
 Measured results:
 ```
 spot_curve rho_sa range: 11.8 – 18.4 µm (mean 16.8 µm)
+sa_poly c₃    : 24.5 – 46.6 µm
+sa_poly c₅    : -101.7 – -57.7 µm
 w040_curve W040 range:   1.871 – 3.141 µm OPD
 ```
 
@@ -1178,7 +1190,7 @@ Parameter controls:
 - **Defocus z**: ±700 µm, 5 µm step
 - **Gamma**: 1.0–3.0
 - **Exposure**: 1–8
-- **PSF model**: Pillbox / Gaussian / Double-Gaussian / Geometric fast / Geometric integral
+- **PSF model**: Pillbox / Gaussian / MZD (Multi-Zone Defocus) / Geometric fast / Geometric integral
 - **CHL curve**: RoRi / Paraxial
 - **Include SA**: on/off
 
@@ -1192,7 +1204,7 @@ Fixed: Paraxial CHL, no SA
 |-------|----------------|
 | Pillbox + Paraxial | Hard-cutoff transition, most conservative |
 | Gaussian + Paraxial | Soft tails, closer to diffraction effects |
-| DGauss + Paraxial | Double-zone Gaussian, captures SA structure |
+| MZD + Paraxial | Multi-Zone Defocus, arcsin ring ESF with pupil integration |
 
 **5b — Aberration Accuracy Comparison (controlled variable: CHL input fidelity)**
 
@@ -1210,7 +1222,7 @@ Fixed: Gaussian PSF
 |-----|-----|----------------|
 | 1 | Pillbox + RoRi + SA | — |
 | 2 | Gaussian + RoRi + SA | — |
-| 3 | DGauss + RoRi + SA | — |
+| 3 | MZD + RoRi + SA | — |
 | 4 | **Geometric fast (ray fan)** | **Real ray trace, no PSF assumption** |
 
 The ray-fan model serves as the reference standard for analytic models:
@@ -1283,6 +1295,8 @@ $$\mathrm{ESF}(x;\,z,\lambda) = \sum_k \rho_k W_k \left[\frac{1}{\pi}\arcsin\!\l
 | Quantity | Range | Description |
 |----------|-------|-------------|
 | $\rho_{sa}(\lambda)$ | 11.8 – 18.4 µm (mean 16.8 µm) | RMS residual SA blur |
+| $c_3(\lambda)$ | 24.5 – 46.6 µm | Primary SA polynomial coefficient |
+| $c_5(\lambda)$ | −101.7 – −57.7 µm | Secondary SA polynomial coefficient |
 | $W_{040}(\lambda)$ | 1.871 – 3.141 µm OPD | Seidel SA coefficient |
 | FNO (measured) | 2.0 | Working f-number |
 | Focal length | 85.0 mm | Measured |
@@ -1292,7 +1306,7 @@ $$\mathrm{ESF}(x;\,z,\lambda) = \sum_k \rho_k W_k \left[\frac{1}{\pi}\arcsin\!\l
 - **Higher exposure** → larger CFW (low-contrast fringes become visible), but at very high exposure saturation causes CFW to decrease
 - **RoRi vs. Paraxial**: In fast lenses with significant spherochromatism, RoRi predictions are closer to reality
 - **Including SA**: $\rho_{sa}$ increases total blur, widening the CFW vs. z curve (larger fringe region)
-- **DGauss vs. Gaussian**: DGauss better captures PSF asymmetry when SA is significant
+- **MZD vs. Gaussian**: MZD uses arcsin ring ESF with pupil-resolved SA, better capturing PSF asymmetry when SA is significant
 
 ---
 
@@ -1356,7 +1370,7 @@ Loaded via Optiland `fileio.load_zemax_file()`, returning an `Optic` object supp
 | SA blur (RMS) | $\rho_{sa} = \sqrt{\sum w_i y_\text{spot}^2 / \sum w_i}$ |
 | Pillbox ESF | $\frac{1}{2}(1 + x/\rho)$, linear on $[-\rho, \rho]$ |
 | Gaussian ESF | $\frac{1}{2}[1 + \text{erf}(x/(\sqrt{2}\cdot 0.5\rho))]$ |
-| Double-Gaussian ESF | $w_1\Phi(x/\sigma_1) + w_2\Phi(x/\sigma_2)$ |
+| MZD ring ESF | $\arcsin(\mathrm{clip}(x/R, -1, 1))/\pi + 1/2$, with $R_k = \sqrt{(\rho_k \rho_\text{CHL})^2 + \mathrm{TA}_\text{SA}^2}$ |
 | Geometric integral ESF | $\int_0^1 [\arcsin(x/R(\rho))/\pi + \tfrac{1}{2}]\,2\rho\,d\rho$ |
 | Ray-fan extrapolation | $R(\rho;z,\lambda) = \|\text{TA}_0 + m\cdot z\|$ |
 | FFT pixel pitch | $dx = \lambda \cdot N / Q$, $Q = \text{grid\_size}/(\text{num\_rays}-1)$ |
@@ -1366,4 +1380,4 @@ Loaded via Optiland `fileio.load_zemax_file()`, returning an `Optic` object supp
 
 ---
 
-*Report based on the ChromFringe codebase (commit b414a6e: multi-camera support + two-stage PSF baking), updated: 2026-03-10.*
+*Report based on the ChromFringe codebase (commit c065aa9: multi-zone defocus + SA polynomial curves), updated: 2026-03-11.*
