@@ -26,7 +26,7 @@ except ModuleNotFoundError:
 # =============================================================================
 DEFAULT_FNUMBER: float = 1.4
 EXPOSURE_SLOPE: float = 8.0
-DISPLAY_GAMMA: float = 2.2
+DISPLAY_GAMMA: float = 1.8
 COLOR_DIFF_THRESHOLD: float = 0.2
 EDGE_HALF_WINDOW_PX: int = 400
 
@@ -273,6 +273,37 @@ def edge_rgb_response_vec(
     return r, g, b
 
 
+def is_fringe_mask(
+    r: np.ndarray,
+    g: np.ndarray,
+    b: np.ndarray,
+    diff_threshold: float = COLOR_DIFF_THRESHOLD,
+    low_threshold: float = 0.15,
+    high_threshold: float = 0.80,
+) -> np.ndarray:
+    """Boolean mask of visible chromatic-fringe pixels.
+
+    A pixel is classified as a visible fringe pixel when **all three**
+    conditions hold (paper definition):
+
+    1. Every channel exceeds *low_threshold* — excludes near-black pixels.
+    2. At least one pairwise channel difference exceeds *diff_threshold* —
+       visible colour shift present.
+    3. At least one channel is below *high_threshold* — excludes near-white /
+       saturated pixels.
+
+    Works element-wise on both scalars and NumPy arrays.
+    """
+    cond1 = (r > low_threshold) & (g > low_threshold) & (b > low_threshold)
+    cond2 = (
+        (np.abs(r - g) > diff_threshold)
+        | (np.abs(r - b) > diff_threshold)
+        | (np.abs(g - b) > diff_threshold)
+    )
+    cond3 = np.minimum(np.minimum(r, g), b) < high_threshold
+    return cond1 & cond2 & cond3
+
+
 def detect_fringe_binary(
     x_um: float,
     z_um: float,
@@ -294,11 +325,29 @@ def detect_fringe_binary(
         f_number=f_number, psf_mode=psf_mode,
         sensor_response=sensor_response,
     )
-    return int(
-        abs(r - g) > threshold
-        or abs(r - b) > threshold
-        or abs(g - b) > threshold
-    )
+    return int(bool(is_fringe_mask(
+        np.asarray(r), np.asarray(g), np.asarray(b),
+        diff_threshold=threshold,
+    )))
+
+
+def _cfw_from_mask(fringed: np.ndarray, gap_fill: int = 5) -> int:
+    """Compute colour-fringe width (in pixels) from a boolean fringe mask.
+
+    Uses the outer-boundary method: CFW is the distance from the first
+    fringed pixel to the last fringed pixel.  This is robust against
+    threshold jitter that creates small internal gaps in the mask.
+
+    Parameters
+    ----------
+    fringed : 1-D boolean array
+    gap_fill : int
+        Kept for API compatibility but no longer used.
+    """
+    indices = np.flatnonzero(fringed)
+    if indices.size == 0:
+        return 0
+    return int(indices[-1] - indices[0] + 1)
 
 
 def fringe_width(
@@ -312,6 +361,7 @@ def fringe_width(
     psf_mode: Literal["disc", "gauss"] = DEFAULT_PSF_MODE,
     xrange_val: int | None = None,
     color_diff_threshold: float | None = None,
+    gap_fill: int = 5,
     sensor_response: dict[str, np.ndarray] | None = None,
 ) -> int:
     half = EDGE_HALF_WINDOW_PX if xrange_val is None else int(xrange_val)
@@ -324,5 +374,5 @@ def fringe_width(
         sensor_response=sensor_response,
     )
     thr = COLOR_DIFF_THRESHOLD if color_diff_threshold is None else color_diff_threshold
-    fringed = (np.abs(r - g) > thr) | (np.abs(r - b) > thr) | (np.abs(g - b) > thr)
-    return int(fringed.sum())
+    fringed = is_fringe_mask(r, g, b, diff_threshold=thr)
+    return _cfw_from_mask(fringed)

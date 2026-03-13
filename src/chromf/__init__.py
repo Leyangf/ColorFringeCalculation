@@ -10,6 +10,7 @@ Core CFW functions (from cfw.py):
     edge_rgb_response       R, G, B ESF tuple at (x, z)  [scalar x]
     edge_rgb_response_vec   R, G, B ESF arrays at (x_arr, z)  [vectorised]
     detect_fringe_binary    1 if pixel is colour-fringed, else 0
+    is_fringe_mask          Boolean mask of visible fringe pixels (all 3 conditions)
 
 Spectral data (from spectrum_loader.py):
 
@@ -37,6 +38,7 @@ from chromf.cfw import (
     edge_rgb_response,
     edge_rgb_response_vec,
     detect_fringe_binary,
+    is_fringe_mask,
     load_sensor_response,
 )
 
@@ -60,6 +62,7 @@ __all__ = [
     "edge_rgb_response",
     "edge_rgb_response_vec",
     "detect_fringe_binary",
+    "is_fringe_mask",
     "load_sensor_response",
     # spectrum_loader
     "channel_products",

@@ -2,6 +2,7 @@
 title: ChromFringe Technical Research Report
 tags: [optics, chromatic-aberration, PSF, research]
 created: 2026-03-10
+updated: 2026-03-13
 ---
 
 # ChromFringe Technical Research Report
@@ -30,7 +31,7 @@ created: 2026-03-10
   - [[#6.4 Seidel W040 Spherical Aberration Coefficient]]
   - [[#6.5 ESF Model: Pillbox (Geometric Uniform Disc)]]
   - [[#6.6 ESF Model: Gaussian PSF]]
-  - [[#6.7 ESF Model: Multi-Zone Defocus (MZD)]]
+  - [[#6.7 ESF Model: Multi-Zone Defocus (MZD) — Historical]]
   - [[#6.8 Geometric Pupil Integral (Gauss-Legendre)]]
   - [[#6.9 Ray-Fan Linear Extrapolation]]
   - [[#6.10 FFT Fraunhofer Diffraction PSF]]
@@ -62,9 +63,8 @@ $$\text{Scene (knife-edge)} \;\xrightarrow{D_{65}}\; \text{Illuminant} \;\xright
 | Level | Method | Speed | Accuracy |
 |-------|--------|-------|----------|
 | 0 | FFT diffraction PSF (ground truth) | ~1 s/ESF | Includes diffraction effects |
-| 1 | Geometric pupil integral (Gauss-Legendre) | ~10 ms/ESF | Geometrically exact |
-| 2 | Ray-fan linear extrapolation (precomputed fan) | <1 ms/ESF | Linear error O((z/f')²) |
-| 3 | Analytic ESF models (Pillbox/Gauss/MZD) | <0.01 ms/ESF | Parametric approximation |
+| 1 | Ray-fan linear extrapolation (precomputed fan) | <1 ms/ESF | Geometrically exact, linear error O((z/f')²) |
+| 2 | Analytic ESF models (Disc/Gauss) | <0.01 ms/ESF | Parametric approximation |
 
 ### 1.3 Test Lens
 
@@ -96,9 +96,9 @@ ChromFringe/
 │   └── cfw_geom_demo.ipynb                 ← Geometric/analytic PSF model notebook
 ├── src/chromf/
 │   ├── __init__.py                         ← Public API exports (16 functions)
-│   ├── cfw.py                              ← JIT-compiled CFW core kernels
+│   ├── cfw.py                              ← JIT-compiled CFW core kernels (disc/gauss)
 │   ├── spectrum_loader.py                  ← Spectral data loading & normalisation
-│   └── optiland_bridge.py                  ← Aberration extraction + PSF computation
+│   └── optiland_bridge.py                  ← Aberration extraction + ESF computation
 ├── pyproject.toml
 ├── environment.yml
 ├── requirements.txt
@@ -140,14 +140,14 @@ graph TD
 ```
 chromf/__init__.py
   ├── from chromf.cfw import fringe_width, edge_response, edge_rgb_response,
-  │       detect_fringe_binary, load_sensor_response
-  │     └── cfw.py calls spectrum_loader.channel_products(sensor_model="nikond700") at module load
+  │       edge_rgb_response_vec, detect_fringe_binary, is_fringe_mask, load_sensor_response
+  │     └── cfw.py calls spectrum_loader.channel_products(sensor_model="sonya900") at module load
   │           └── spectrum_loader.py → pandas (CSV I/O), scipy (CubicSpline)
   ├── from chromf.spectrum_loader import channel_products
-  └── from chromf.optiland_bridge import compute_chl_curve, compute_rori_chl_curve,
-        compute_rori_spot_curves, compute_sa_poly_curves, compute_w040_curve, precompute_ray_fan,
-        compute_polychromatic_esf, compute_polychromatic_esf_geometric,
-        compute_polychromatic_esf_fast, bake_wavelength_esfs, apply_sensor_weights
+  └── from chromf.optiland_bridge import compute_chl_curve,
+        compute_rori1_spot_curves, compute_rori4_spot_curves, precompute_ray_fan,
+        compute_polychromatic_esf, compute_polychromatic_esf_geom,
+        bake_wavelength_esfs, apply_sensor_weights
           ├── from chromf.spectrum_loader import channel_products
           └── lazy: from optiland.psf import FFTPSF (imported only when FFT functions are called)
 ```
@@ -167,16 +167,13 @@ flowchart LR
 
     subgraph optiland_bridge
         CHL[compute_chl_curve\nParaxial CHL λ→µm]
-        RORI[compute_rori_spot_curves\nRoRi CHL + ρ_sa]
-        W040[compute_w040_curve\nSeidel W040]
+        RORI1[compute_rori1_spot_curves\nRoRi-1 CHL + ρ_sa]
+        RORI4[compute_rori4_spot_curves\nRoRi-4 CHL + ρ_sa]
         FAN[precompute_ray_fan\n32×31 TA₀ + slope]
         FFT[compute_polychromatic_esf\nFFT diffraction ESF]
-        GEO[compute_polychromatic_esf_geometric\nGeometric integral ESF]
-        FAST[compute_polychromatic_esf_fast\nRay-fan extrapolation ESF]
+        GEOM[compute_polychromatic_esf_geom\nRay-fan extrapolation ESF]
         BAKE["bake_wavelength_esfs\nMonochromatic ESF baking\n(sensor-independent)"]
         APPLY["apply_sensor_weights\nApply spectral weights\n(microseconds)"]
-        PSF2D[compute_polychromatic_psf\n2D polychromatic PSF]
-        CFWPSF[compute_cfw_psf\nPSF → CFW]
     end
 
     subgraph spectrum_loader
@@ -186,17 +183,19 @@ flowchart LR
     subgraph cfw
         ER[edge_response\nSingle-channel ESF value]
         ERGB[edge_rgb_response\nR G B tuple]
+        ERVEC[edge_rgb_response_vec\nVectorised R G B arrays]
+        IFM[is_fringe_mask\nBoolean fringe mask]
         DFB[detect_fringe_binary\nPixel-level fringe detection]
-        FW[fringe_width\nTotal CFW pixel count]
+        FW[fringe_width\nTotal CFW in µm]
     end
 
-    ZMX --> CHL & RORI & W040 & FAN & FFT & GEO & FAST & BAKE & PSF2D
+    ZMX --> CHL & RORI1 & RORI4 & FAN & FFT & GEOM & BAKE
     BAKE --> APPLY
-    PSF2D --> CFWPSF
     CSV --> SD
     SD --> ER & APPLY
-    CHL & RORI & W040 --> ER
-    ER --> ERGB --> DFB --> FW
+    CHL & RORI1 & RORI4 --> ER
+    ER --> ERGB --> DFB
+    ER --> ERVEC --> IFM --> FW
 ```
 
 ### 4.2 Experimental Workflows (Notebook Perspective)
@@ -205,7 +204,7 @@ flowchart LR
 
 ```
 Load lens → Spectral data →
-Stage 1: Monochromatic ESF baking (25 z × 11 wavelengths, FFT diffraction, sensor-independent) →
+Stage 1: Monochromatic ESF baking (29 z × 11 wavelengths, FFT diffraction, sensor-independent) →
 Stage 2: Apply sensor spectral weights (re-run only when switching cameras, microseconds) →
 Polychromatic ESF cache →
 Tone mapping (variable parameters) →
@@ -217,9 +216,9 @@ CFW detection + channel-pair difference analysis
 **`cfw_geom_demo.ipynb` (geometric/analytic path):**
 
 ```
-Load lens → Extract aberration curves (CHL/RoRi/SA/W040) → Precompute ray fan →
+Load lens → Extract aberration curves (CHL / RoRi-1 / RoRi-4) → Precompute ray fans →
 Interactive viewer (PSF model × CHL model × defocus) →
-Static comparison experiments (5a: PSF model | 5b: aberration accuracy | 5c: full-input comparison)
+Static comparison experiments (5a: PSF model | 5b: orthogonality test | 5c: Geom Fast convergence)
 ```
 
 ---
@@ -234,21 +233,23 @@ Static comparison experiments (5a: PSF model | 5b: aberration accuracy | 5c: ful
 
 ```python
 from chromf import (
-    fringe_width,          # Total CFW pixel count
-    edge_response,         # Single-channel ESF value
-    edge_rgb_response,     # R, G, B ESF tuple
-    detect_fringe_binary,  # Single-pixel fringe detection
-    load_sensor_response,  # Build R/G/B spectral-weight dict for a camera model
+    fringe_width,            # Total colour fringe width in µm at a given defocus
+    edge_response,           # Single-channel ESF value at (x, z)
+    edge_rgb_response,       # R, G, B ESF tuple at (x, z) [scalar x]
+    edge_rgb_response_vec,   # R, G, B ESF arrays at (x_arr, z) [vectorised]
+    detect_fringe_binary,    # 1 if pixel is colour-fringed, else 0
+    is_fringe_mask,          # Boolean mask of visible fringe pixels (all 3 conditions)
+    load_sensor_response,    # Build R/G/B spectral-weight dict for a camera model
 )
 ```
 
-> **Multi-camera support:** All public CFW functions accept a `sensor_response` parameter. Use `load_sensor_response("nikond700")` or `load_sensor_response("sonya900")` to build the corresponding dict and pass it in to switch camera models. Default: Nikon D700.
+> **Multi-camera support:** All public CFW functions accept a `sensor_response` parameter. Use `load_sensor_response("sonya900")` or `load_sensor_response("nikond700")` to build the corresponding dict and pass it in to switch camera models. Default: Sony A900.
 
 #### Spectral Data (from `spectrum_loader.py`)
 
 ```python
 from chromf import channel_products   # Energy-normalised S·D products
-# channel_products(sensor_model="nikond700")  ← specify camera model
+# channel_products(sensor_model="sonya900")  ← specify camera model
 ```
 
 #### Aberration Extraction & ESF (from `optiland_bridge.py`)
@@ -256,14 +257,11 @@ from chromf import channel_products   # Energy-normalised S·D products
 ```python
 from chromf import (
     compute_chl_curve,              # Paraxial CHL curve
-    compute_rori_chl_curve,         # Aperture-weighted RoRi CHL
-    compute_rori_spot_curves,       # RoRi CHL + residual SA blur
-    compute_sa_poly_curves,         # SA polynomial coefficients c₃, c₅ per wavelength
-    compute_w040_curve,             # Seidel W040 coefficient
-    precompute_ray_fan,             # Precompute ray fan
-    compute_polychromatic_esf,      # FFT diffraction ESF (ground truth)
-    compute_polychromatic_esf_geometric,  # Geometric integral ESF
-    compute_polychromatic_esf_fast, # Ray-fan extrapolation ESF
+    compute_rori1_spot_curves,      # RoRi-1 CHL + residual SA spot radius (ρ_SA)
+    compute_rori4_spot_curves,      # RoRi-4 CHL + residual SA spot radius (ρ_SA)
+    precompute_ray_fan,             # Pre-trace ray fan for fast ESF sweeps
+    compute_polychromatic_esf,      # Diffraction ESF (ground truth)
+    compute_polychromatic_esf_geom, # Geometric ESF via pre-traced ray fan
     bake_wavelength_esfs,           # Sensor-independent monochromatic ESF baking (FFT)
     apply_sensor_weights,           # Apply sensor spectral weights (microseconds)
 )
@@ -318,23 +316,23 @@ def channel_products(
 
 ### 5.3 `cfw.py` — JIT-Compiled Core Kernels
 
-**File path:** `src/chromf/cfw.py` (336 lines)
+**File path:** `src/chromf/cfw.py` (379 lines)
 
 #### Module-Level Constants
 
 ```python
 DEFAULT_FNUMBER: float = 1.4        # Default f-number
 EXPOSURE_SLOPE: float = 8.0         # Tone curve slope
-DISPLAY_GAMMA: float = 2.2          # sRGB Gamma
+DISPLAY_GAMMA: float = 1.8          # Display gamma
 COLOR_DIFF_THRESHOLD: float = 0.2   # Fringe visibility threshold
 EDGE_HALF_WINDOW_PX: int = 400      # Scan half-window (pixels)
-ALLOWED_PSF_MODES = ("geom", "gauss", "mzd")
+ALLOWED_PSF_MODES = ("disc", "gauss")
 DEFAULT_PSF_MODE = "gauss"
 ```
 
-**Module-load precomputation (default Nikon D700):**
+**Module-load precomputation (default Sony A900):**
 ```python
-_prods = _channel_products(sensor_model="nikond700")
+_prods = _channel_products(sensor_model="sonya900")
 SENSOR_RESPONSE: dict[str, ndarray] = {
     "R": _prods["red"][:, 1],       # shape (31,)
     "G": _prods["green"][:, 1],
@@ -345,53 +343,73 @@ SENSOR_RESPONSE: dict[str, ndarray] = {
 #### Sensor Selection Function
 
 ```python
-def load_sensor_response(model: str = "nikond700") -> dict[str, np.ndarray]:
+def load_sensor_response(model: str = "sonya900") -> dict[str, np.ndarray]:
     """Build an R/G/B spectral-weight dict for the specified camera.
     Returns {"R": array(31,), "G": ..., "B": ...}, each array is energy-normalised S·D.
     CSV files data/raw/sensor_{model}_{red|green|blue}.csv must exist.
     """
 ```
 
-> All public CFW functions accept an optional `sensor_response` parameter. When `None` (default), the module-level `SENSOR_RESPONSE` (Nikon D700) is used; pass the return value of `load_sensor_response("sonya900")` to switch to Sony A900.
+> All public CFW functions accept an optional `sensor_response` parameter. When `None` (default), the module-level `SENSOR_RESPONSE` (Sony A900) is used; pass the return value of `load_sensor_response("nikond700")` to switch to Nikon D700.
 
 #### JIT-Compiled Kernels (Numba `@njit(cache=True)`)
 
 | Function | Lines | Description |
 |----------|-------|-------------|
-| `_exposure_curve(x, slope)` | 48–51 | `tanh` tone curve, mapped to [0,1] |
-| `_geom_esf(x, rho)` | 54–63 | Uniform disc (Pillbox) ESF |
-| `_gauss_esf(x, rho)` | 66–71 | Gaussian PSF ESF (σ ≈ 0.5ρ) |
-| `_edge_response_jit(x, z, ...)` | 74–110 | Pillbox/Gaussian channel integration kernel |
-| `_mzd_edge_response_jit(x, z, ...)` | 112–175 | Multi-Zone Defocus kernel: arcsin ring ESF + Gauss-Legendre pupil integration |
+| `_exposure_curve(x, slope)` | 78–80 | `tanh` tone curve, mapped to [0,1] |
+| `_disc_esf(x, rho)` | 84–92 | Uniform disc (Pillbox) ESF |
+| `_gauss_esf(x, rho)` | 96–100 | Gaussian PSF ESF (σ ≈ 0.5ρ) |
+| `_edge_response_jit(x, z, ...)` | 105–131 | Disc/Gaussian single-channel integration kernel |
+| `_edge_response_vec_jit(x_arr, z, ...)` | 134–165 | Vectorised variant: processes an array of x values in one Numba call |
 
 #### Public API
 
 ```python
 def edge_response(
     channel: Literal["R", "G", "B"],
-    x_px: float,         # Pixel coordinate (µm)
+    x_um: float,         # Position coordinate (µm)
     z_um: float,         # Defocus (µm)
     *,
     exposure_slope: float | None = None,   # Default EXPOSURE_SLOPE=8.0
-    gamma: float | None = None,            # Default DISPLAY_GAMMA=2.2
+    gamma: float | None = None,            # Default DISPLAY_GAMMA=1.8
     chl_curve_um: np.ndarray,             # Shape (31,), CHL(λ) µm
-    sa_curve_um: np.ndarray | None = None, # Shape (31,), ρ_sa(λ) µm
-    w040_curve_um: np.ndarray | None = None, # Legacy; MZD mode uses sa_curve_um directly
+    rho_sa_um: np.ndarray | None = None,  # Shape (31,), ρ_sa(λ) µm
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss", "mzd"] = "gauss",
-    sensor_response: dict[str, np.ndarray] | None = None,  # Default Nikon D700
+    psf_mode: Literal["disc", "gauss"] = "gauss",
+    sensor_response: dict[str, np.ndarray] | None = None,  # Default Sony A900
 ) -> float  # Return value ∈ [0, 1], tone-mapped ESF value
 ```
 
 ```python
 def edge_rgb_response(
-    x_px: float, z_um: float, *, ...  # Same as edge_response
+    x_um: float, z_um: float, *, ...  # Same as edge_response
 ) -> tuple[float, float, float]       # (R, G, B) ESF tuple
 ```
 
 ```python
+def edge_rgb_response_vec(
+    x_arr: np.ndarray, z_um: float, *, ...  # Same as edge_response
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]  # (R, G, B) ESF arrays
+# Vectorised: dispatches to Numba only 3 times (once per channel)
+# regardless of array length, eliminating Python-loop overhead
+```
+
+```python
+def is_fringe_mask(
+    r: np.ndarray, g: np.ndarray, b: np.ndarray,
+    diff_threshold: float = 0.2,
+    low_threshold: float = 0.15,
+    high_threshold: float = 0.80,
+) -> np.ndarray  # Boolean mask
+# A pixel is fringed when ALL THREE conditions hold:
+# 1. Every channel > low_threshold (excludes near-black)
+# 2. At least one pair difference > diff_threshold (colour shift present)
+# 3. At least one channel < high_threshold (excludes near-white/saturated)
+```
+
+```python
 def detect_fringe_binary(
-    x_px: float, z_um: float,
+    x_um: float, z_um: float,
     *,
     color_diff_threshold: float | None = None,  # Default 0.2
     ...  # Same as edge_response
@@ -404,24 +422,31 @@ def fringe_width(
     *,
     xrange_val: int | None = None,   # Default EDGE_HALF_WINDOW_PX=400
     ...  # Same as edge_response
-) -> int  # Total CFW (pixel count)
-# Scans x ∈ [-400, 400], sums all pixels exceeding threshold
+) -> int  # Total CFW in µm (outer-boundary method)
+# Scans x ∈ [-400, 400] µm, uses edge_rgb_response_vec + is_fringe_mask
+# CFW = distance from first fringed pixel to last fringed pixel
 ```
 
 ---
 
-### 5.4 `optiland_bridge.py` — Aberration Extraction & PSF Computation
+### 5.4 `optiland_bridge.py` — Aberration Extraction & ESF Computation
 
-**File path:** `src/chromf/optiland_bridge.py` (923 lines)
+**File path:** `src/chromf/optiland_bridge.py` (632 lines)
 
 #### Shared Constants
 
 ```python
-_RORI_PY = (0.0, 0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
-# Normalised pupil heights: 0, √0.25, √0.5, √0.75, 1
+#: RoRi-1: 5-zone weighted average.
+#: Pupil coords: 0, √¼, √½, √¾, 1  →  weights: 1, 12.8, 14.4, 12.8, 1 / 42
+_RORI1_PY      = (0.0, 0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
+_RORI1_WEIGHTS = (1.0, 12.8, 14.4, 12.8, 1.0)
+_RORI1_SUM     = 42.0
 
-_RORI_WEIGHTS = (1.0, 12.8, 14.4, 12.8, 1.0)
-_RORI_SUM = 42.0
+#: RoRi-4: ρ²-weighted mean using RoRi-1 nodes (orthogonal focal plane).
+#: Weights = _RORI1_WEIGHTS[1:] × ρ_i².  The paraxial node (ρ=0) drops out.
+_RORI4_PY      = (0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
+_RORI4_WEIGHTS = (3.2, 7.2, 9.6, 1.0)
+_RORI4_SUM     = 21.0
 
 _CHANNEL_MAP = {"R": "red", "G": "green", "B": "blue"}
 ```
@@ -432,9 +457,8 @@ _CHANNEL_MAP = {"R": "red", "G": "green", "B": "blue"}
 |----------|-------|-------------|
 | `_resolve_wl_grid(optic, wls, ref_wl)` | 20–36 | Resolve wavelength grid and reference wavelength |
 | `_paraxial_bfl(paraxial, wl_nm, z_start)` | 39–52 | Paraxial marginal ray trace, compute back focal length |
-| `_sk_real(optic, Py, wl_um)` | 101–114 | Meridional real-ray back-focal intercept SK(ρ) |
-| `_optic_at_defocus(optic, z_defocus_um)` | 277–285 | Return deep copy of lens with shifted image plane |
-| `_psf_to_esf(psf_2d, dx_um, x_px, n_pixels)` | 782–808 | 2D PSF → 1D ESF (cumulative sum method) |
+| `_sk_real(optic, Py, wl_um)` | 110–123 | Meridional real-ray back-focal intercept SK(ρ) |
+| `_optic_at_defocus(optic, z_defocus_um)` | 260–268 | Return deep copy of lens with shifted image plane |
 
 #### Aberration Extraction Functions
 
@@ -448,41 +472,27 @@ def compute_chl_curve(
 ```
 
 ```python
-def compute_rori_chl_curve(
-    optic, wavelengths_nm=None, ref_wavelength_nm=None,
-) -> np.ndarray  # Shape (N, 2): [λ_nm, RoRi_CHL_µm]
-# Real-ray five-pupil-height weighted average, includes spherochromatism
-# Internally calls compute_rori_spot_curves and returns the first array
-```
-
-```python
-def compute_rori_spot_curves(
+def compute_rori1_spot_curves(
     optic, wavelengths_nm=None, ref_wavelength_nm=None,
 ) -> tuple[np.ndarray, np.ndarray]
 # Returns: (chl_curve [N,2], spot_curve [N,2])
+# RoRi-1: 5-zone weighted average (energy-weighted best focus)
 # spot_curve[:,1] = ρ_sa(λ), µm, i.e. RMS residual spot radius
 ```
 
 ```python
-def compute_sa_poly_curves(
+def compute_rori4_spot_curves(
     optic, wavelengths_nm=None, ref_wavelength_nm=None,
-) -> np.ndarray  # Shape (N, 3): [λ_nm, c₃_µm, c₅_µm]
-# Per-wavelength SA polynomial: TA_SA(ρ,λ) ≈ c₃(λ)·ρ³ + c₅(λ)·ρ⁵
-# Captures both primary (3rd-order) and secondary (5th-order) SA
-# Use with psf_mode='mzd' via sa_poly_um=result[:, 1:]
-```
-
-```python
-def compute_w040_curve(
-    optic, wavelengths_nm=None, ref_wavelength_nm=None,
-) -> np.ndarray  # Shape (N, 2): [λ_nm, W040_µm OPD]
-# Seidel spherical aberration coefficient: W040 = -TA_marginal_µm / (8·FNO)
+) -> tuple[np.ndarray, np.ndarray]
+# Returns: (chl_curve [N,2], spot_curve [N,2])
+# RoRi-4: ρ²-weighted mean (orthogonal focal plane where CHL ⊥ SA)
+# Same 5 ray samples as RoRi-1; paraxial node drops out (weight w₀·ρ₀² = 0)
 ```
 
 #### Ray Tracing & ESF Functions
 
 ```python
-def precompute_ray_fan(optic, num_rho: int = 32, sensor_model: str = "nikond700") -> dict:
+def precompute_ray_fan(optic, num_rho: int = 32, sensor_model: str = "sonya900") -> dict:
     """
     Pre-trace 32×31 = 992 rays (at z=0)
     Returns dict containing:
@@ -501,29 +511,21 @@ def compute_polychromatic_esf(
     grid_size: int = 512,   # FFT grid size
     strategy: str = "chief_ray",  # Must use chief_ray to preserve defocus phase
     wl_stride: int = 1,     # Wavelength subsampling stride
+    sensor_model: str = "sonya900",
 ) -> np.ndarray  # Shape == x_um.shape, values ∈ [0, 1]
 # FFT diffraction PSF → ESF (ground truth, slow)
 ```
 
 ```python
-def compute_polychromatic_esf_geometric(
-    optic, channel: str, z_defocus_um: float,
-    x_um: np.ndarray,
-    num_rho: int = 32,      # Gauss-Legendre nodes
-    wl_stride: int = 1,
-) -> np.ndarray  # Values ∈ [0, 1]
-# Geometric pupil integral ESF, ~100× faster than FFT
-```
-
-```python
-def compute_polychromatic_esf_fast(
+def compute_polychromatic_esf_geom(
     ray_fan: dict,           # From precompute_ray_fan
     channel: str,
     z_defocus_um: float,
     x_um: np.ndarray,
     wl_stride: int = 1,
 ) -> np.ndarray  # Values ∈ [0, 1]
-# Ray-fan linear extrapolation, ~1000× faster than FFT
+# Ray-fan linear extrapolation ESF, ~1000× faster than FFT
+# No ray tracing performed; cost is a handful of vectorised numpy operations
 ```
 
 #### Two-Stage Baking Functions
@@ -554,33 +556,6 @@ def apply_sensor_weights(
 ```
 
 > **Performance:** For the same optical system with 25 defocus steps × 3 channels × 2 cameras (150 ESFs), the two-stage approach requires only 25 × 11 = 275 FFTs + 150 NumPy weightings; the single-step approach would require 150 × 11 = 1650 FFTs. Speedup: **~6×** (single camera ~3×).
-
-#### 2D PSF and Direct CFW Computation
-
-```python
-def compute_polychromatic_psf(
-    optic, channel: str, z_defocus_um: float,
-    num_rays: int = 128, grid_size: int = 1024,
-    strategy: str = "best_fit_sphere",
-    sensor_model: str = "nikond700",
-) -> tuple[np.ndarray, float]
-# Returns (psf_2d [grid_size, grid_size], dx_um)
-# psf_2d is energy-normalised (sum=1)
-```
-
-```python
-def compute_cfw_psf(
-    optic, z_defocus_um: float, *,
-    num_rays: int = 128, grid_size: int = 1024,
-    strategy: str = "best_fit_sphere",
-    x_px: float = 4.5,
-    exposure_slope: float = 8.0,
-    display_gamma: float = 2.2,
-    color_diff_threshold: float = 0.2,
-) -> int
-# From 2D PSF → ESF → tone mapping → CFW pixel count
-# Computed at pixel scale, directly comparable to cfw.fringe_width()
-```
 
 ---
 
@@ -629,7 +604,7 @@ Substituting back:
 
 $$\rho = |\Delta z| \cdot \frac{1}{\sqrt{4N^2 - 1}} = \frac{|\Delta z|}{\sqrt{4N^2 - 1}}$$
 
-Implementation (`cfw.py` lines 158–161):
+Implementation (`cfw.py` lines 116–119):
 ```python
 denom = _sqrt(4.0 * f_number**2.0 - 1.0)
 rho_chl = _fabs((z - chl_curve[n]) / denom)
@@ -693,7 +668,7 @@ $$\mathrm{RoRi}_1(\lambda) = \frac{\mathrm{SK}(0) + 12.8\cdot\mathrm{SK}(\sqrt{0
 
 **Predictive advantage.** Because the nodes span the full range $\rho \in [0,1]$, including the paraxial limit $\rho=0$ and the marginal ray $\rho=1$, RoRi-1 explicitly captures the extreme focal positions of the lens.  The paraxial contribution anchors the CHL estimate to the secondary spectrum, while the marginal ray ensures the aperture edge is represented.  This broad coverage preserves the full chromatic spread of $\mathrm{SK}(\rho,\lambda)$, which benefits prediction of fringe visibility at low tone-curve exposures where even small channel differences cross the detection threshold.
 
-Implementation (`optiland_bridge.py`):
+Implementation (`optiland_bridge.py`, `compute_rori1_spot_curves`):
 ```python
 _RORI1_PY      = (0.0, 0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
 _RORI1_WEIGHTS = (1.0, 12.8, 14.4, 12.8, 1.0)
@@ -704,7 +679,7 @@ sks = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
 rori1 = float(np.dot(_RORI1_WEIGHTS, sks) / _RORI1_SUM)
 ```
 
-#### 6.2.5 RoRi-2: Three-Point Gauss–Legendre Rule
+#### 6.2.5 RoRi-2: Three-Point Gauss–Legendre Rule (Research Analysis, Not Implemented)
 
 **Quadrature construction.** The substitution $u = \rho^2$ transforms the area-weighted integral into the standard form $\int_0^1 f(u)\,du$ with $f(u) = \mathrm{SK}(\sqrt{u},\lambda)$.  The optimal three-point quadrature for this form is the three-point Gauss–Legendre rule on $[0,1]$, which integrates polynomials up to degree $2\cdot 3 - 1 = 5$ exactly.  The nodes and weights are
 
@@ -730,7 +705,7 @@ sks   = np.array([_sk_real(optic, py, wl_um) for py in _RORI2_PY])
 rori2 = float(np.dot(_RORI2_WEIGHTS, sks) / _RORI2_SUM)
 ```
 
-#### 6.2.6 RoRi-3: Five-Point Gauss–Lobatto Rule
+#### 6.2.6 RoRi-3: Five-Point Gauss–Lobatto Rule (Research Analysis, Not Implemented)
 
 **Quadrature construction.** Gauss–Lobatto quadrature is the variant of Gauss–Legendre in which the two endpoints of the integration interval are constrained to be nodes, and the remaining interior nodes are chosen to maximise algebraic precision subject to that constraint.  For $n$ points with both endpoints fixed, the rule integrates polynomials of degree $\leq 2n-3$ exactly — one degree less than the unconstrained GL rule of the same order, but with the practical benefit that the boundary values $f(0)$ and $f(1)$ are explicitly included.
 
@@ -782,9 +757,44 @@ rori3 = float(np.dot(_RORI3_WEIGHTS, sks) / _RORI3_SUM)
 
 The counterintuitive ordering — higher algebraic precision yields worse CFW prediction — arises because the RoRi scalar is not directly optimised for CFW accuracy.  The downstream threshold detection is nonlinear, and CFW prediction depends more on the chromatic spread of the CHL curve than on the accuracy of the aperture-averaged focal position per se.  RoRi-1 preserves this spread as a consequence of its equal-area node placement, which happens to sample the extremes of $\mathrm{SK}(\rho,\lambda)$, rather than through any deliberate design for CFW prediction.
 
-#### 6.2.8 RoRi CHL Curve
+#### 6.2.8 RoRi-4: ρ²-Weighted Orthogonal Focal Plane
 
-For all three variants, the CHL curve is computed by subtracting the reference-wavelength value:
+**Quadrature construction.** RoRi-4 uses the same five ray samples as RoRi-1 but applies **ρ²-weighted** averaging.  The weights are derived from the RoRi-1 weights multiplied by the squared pupil heights:
+
+$$w_i^{(4)} = w_i^{(1)} \cdot \rho_i^2$$
+
+Since $\rho_0 = 0$, the paraxial node drops out, leaving four non-trivial nodes:
+
+| $k$ | $\rho_k$ | $w_k^{(1)}$ | $w_k^{(4)} = w_k^{(1)} \cdot \rho_k^2$ |
+|-----|----------|-------------|----------------------------------------|
+| 1 | $\sqrt{0.25} = 0.5$ | 12.8 | 3.2 |
+| 2 | $\sqrt{0.5} \approx 0.707$ | 14.4 | 7.2 |
+| 3 | $\sqrt{0.75} \approx 0.866$ | 12.8 | 9.6 |
+| 4 | 1.0 | 1.0 | 1.0 |
+
+Sum: $3.2 + 7.2 + 9.6 + 1.0 = 21$
+
+$$\mathrm{RoRi}_4(\lambda) = \frac{3.2\cdot\mathrm{SK}(\sqrt{0.25}) + 7.2\cdot\mathrm{SK}(\sqrt{0.5}) + 9.6\cdot\mathrm{SK}(\sqrt{0.75}) + 1\cdot\mathrm{SK}(1)}{21}$$
+
+**Orthogonality property.** The RoRi-4 focal plane satisfies the condition that the cross-term in the RSS decomposition $\rho^2 = \rho_\text{CHL}^2 + \rho_\text{SA}^2$ is exactly zero under the RoRi-1 quadrature weights.  That is, the CHL and SA blur contributions are statistically uncorrelated.  The SA is still computed using the full RoRi-1 weights (including the paraxial node), which is consistent because the $\rho=0$ term contributes zero to the cross-sum.
+
+Implementation (`optiland_bridge.py`, `compute_rori4_spot_curves`):
+```python
+_RORI4_PY      = (0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
+_RORI4_WEIGHTS = (3.2, 7.2, 9.6, 1.0)
+_RORI4_SUM     = 21.0
+
+sks = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
+               + [_sk_real(optic, py, wl_um) for py in _RORI1_PY[1:]])
+rori4 = float(np.dot(_RORI4_WEIGHTS, sks[1:]) / _RORI4_SUM)
+# SA: full RoRi-1 weights (cross-term vanishes by construction)
+y_spots = (sks - rori4) * _py1 / (2.0 * fno)
+rho_sa  = float(np.sqrt(np.dot(_w1, y_spots**2) / _RORI1_SUM))
+```
+
+#### 6.2.9 RoRi CHL Curve
+
+For all variants, the CHL curve is computed by subtracting the reference-wavelength value:
 
 $$\mathrm{CHL}_\mathrm{RoRi}(\lambda) = \left[\mathrm{RoRi}(\lambda) - \mathrm{RoRi}(\lambda_\mathrm{ref})\right] \times 10^3 \quad (\mu\mathrm{m})$$
 
@@ -804,10 +814,10 @@ $$y_\text{spot}(\rho_i, \lambda) = \frac{[\mathrm{SK}(\rho_i, \lambda) - \mathrm
 
 $$\boxed{\rho_\text{sa}(\lambda) = \sqrt{\frac{\sum_i w_i \cdot y_\text{spot}^2(\rho_i, \lambda)}{\sum_i w_i}}}$$
 
-Implementation (`optiland_bridge.py` lines 165–166):
+Implementation (`optiland_bridge.py`, `compute_rori1_spot_curves`):
 ```python
 y_spots = (sks - rori) * _py / (2.0 * fno)        # mm
-rho_sa  = float(np.sqrt(np.dot(_w, y_spots**2) / _RORI_SUM))  # mm (RMS)
+rho_sa  = float(np.sqrt(np.dot(_w, y_spots**2) / _RORI1_SUM))  # mm (RMS)
 ```
 
 #### 6.3.3 Total Blur Radius (Quadrature Addition)
@@ -816,7 +826,7 @@ CHL blur and SA blur are combined via quadrature (area addition on the blur disc
 
 $$\boxed{\rho(z, \lambda) = \sqrt{\rho_\text{CHL}(z, \lambda)^2 + \rho_\text{SA}(\lambda)^2}}$$
 
-Implementation (`cfw.py` line 162):
+Implementation (`cfw.py` line 120):
 ```python
 rho = _sqrt(rho_chl**2 + sa_curve[n]**2)  # Quadrature addition
 ```
@@ -878,9 +888,9 @@ $$\mathrm{ESF}_\text{geom}(x, \rho) = \begin{cases} 0 & x \leq -\rho \\ \dfrac{1
 
 **Derivation:** At height $x$, the chord length (disc cross-section) is $2\sqrt{\rho^2-x^2}$, but the lateral integral of the uniform disc is linear: $\int_{-\rho}^{x}\!\frac{1}{\pi\rho^2}\cdot 2\sqrt{\rho^2-t^2}\,dt$, which after integration over $t \in [-\rho, x]$ and normalisation yields the linear transition above.
 
-Implementation (`cfw.py` lines 55–63):
+Implementation (`cfw.py` lines 84–92):
 ```python
-def _geom_esf(x: float, rho: float) -> float:
+def _disc_esf(x: float, rho: float) -> float:
     if rho < 1e-6:
         return 1.0 if x >= 0.0 else 0.0
     if x >= rho:  return 1.0
@@ -904,7 +914,7 @@ The 1D ESF of a Gaussian PSF is the error function (CDF of the standard normal):
 
 $$\boxed{\mathrm{ESF}_\text{gauss}(x, \rho) = \frac{1}{2}\left[1 + \mathrm{erf}\!\left(\frac{x}{\sqrt{2}\,\sigma}\right)\right], \quad \sigma = 0.5\rho}$$
 
-Implementation (`cfw.py` lines 66–71):
+Implementation (`cfw.py` lines 96–100):
 ```python
 def _gauss_esf(x: float, rho: float) -> float:
     if rho < 1e-6:
@@ -916,7 +926,9 @@ def _gauss_esf(x: float, rho: float) -> float:
 
 ---
 
-### 6.7 ESF Model: Multi-Zone Defocus (MZD)
+### 6.7 ESF Model: Multi-Zone Defocus (MZD) — Historical
+
+> **Note:** The MZD model was explored during development but has been removed from `cfw.py` in favour of the geometric ray-fan ESF (`compute_polychromatic_esf_geom` in `optiland_bridge.py`), which achieves the same pupil-resolved SA handling with higher accuracy by using actual traced rays rather than parametric SA polynomials.  The mathematical description is retained here for reference.
 
 #### 6.7.1 Physical Motivation
 
@@ -965,9 +977,9 @@ def _mzd_edge_response_jit(x, z, slope, gamma, sensor, chl_curve,
         acc += sensor[n] * wl_contrib / wl_norm
 ```
 
-#### 6.7.5 SA Polynomial Coefficients
+#### 6.7.5 SA Polynomial Coefficients (Removed from Public API)
 
-The `compute_sa_poly_curves` function fits the residual transverse aberration at each wavelength's RoRi best focus to a two-term pupil polynomial:
+The former `compute_sa_poly_curves` function fitted the residual transverse aberration at each wavelength's RoRi best focus to a two-term pupil polynomial:
 
 $$\mathrm{TA}_\text{SA}(\rho, \lambda) \approx c_3(\lambda) \cdot \rho^3 + c_5(\lambda) \cdot \rho^5$$
 
@@ -1000,7 +1012,7 @@ $$\int_{-1}^{1} f\!\left(\frac{\xi+1}{2}\right) \cdot \left(\frac{\xi+1}{2}\righ
 
 where $\xi_k, W_k$ are Gauss-Legendre nodes and weights (on $[-1,1]$), $\rho_k = (\xi_k+1)/2$.
 
-Implementation (`optiland_bridge.py` lines 434–461):
+Implementation (`optiland_bridge.py`, `compute_polychromatic_esf_geom`):
 ```python
 xi, W_gl = np.polynomial.legendre.leggauss(num_rho)   # 32 nodes
 rho_nodes = 0.5 * (xi + 1.0)                          # Map to [0,1]
@@ -1030,7 +1042,7 @@ $$\epsilon = O\!\left(\left(\frac{z}{f'}\right)^2\right) \approx 0.01\%$$
 
 For an 85 mm lens, the error is < 0.01% when $z \leq 800\,\mu\mathrm{m}$.
 
-Implementation (`optiland_bridge.py` lines 584–585):
+Implementation (`optiland_bridge.py`, `compute_polychromatic_esf_geom`):
 ```python
 R = np.abs(TA0 + slope * z_defocus_um)   # (K, N_wl_sub)
 ```
@@ -1063,7 +1075,7 @@ $$\boxed{dx_j = \frac{\lambda_j \cdot N}{Q}, \quad Q = \frac{\text{grid\_size}}{
 
 where $Q$ is the oversampling factor. This means PSFs at different wavelengths have different pixel pitches in physical space and must be superimposed in physical coordinates (µm).
 
-Implementation (`optiland_bridge.py` lines 363–374):
+Implementation (`optiland_bridge.py` lines 339–358):
 ```python
 Q    = grid_size / (num_rays - 1)
 dx_j = wl_um_j * fno / Q          # Wavelength-corrected pixel pitch (µm)
@@ -1102,7 +1114,7 @@ $$\hat{w}_c(\lambda_j) = \frac{g_c(\lambda_j)}{\sum_{j'} g_c(\lambda_{j'})}, \qu
 
 **Wavelength grid:** 31 points, 400–700 nm, 10 nm step. In practice, `wl_stride=3` can down-sample to 11 points (negligible error).
 
-Implementation (`cfw.py` lines 159–172, simplified):
+Implementation (`cfw.py` lines 116–130, simplified):
 ```python
 for n in range(chl_curve.size):
     rho_chl = _fabs((z - chl_curve[n]) / denom)
@@ -1153,13 +1165,13 @@ $$I_\text{display}(x) = T(x;\,\alpha)^\gamma$$
 
 $$\boxed{I_c(x, z) = \left[\frac{\tanh\!\left(\alpha \cdot \mathrm{ESF}_c(x, z)\right)}{\tanh(\alpha)}\right]^\gamma}$$
 
-Implementation (`cfw.py` lines 49–51):
+Implementation (`cfw.py` lines 78–80):
 ```python
 def _exposure_curve(x, slope):
     return np.tanh(slope * x) / np.tanh(slope)
 ```
 
-And (lines 142–143):
+And (lines 129–130):
 ```python
 linear = acc / norm
 return _exposure_curve(linear, slope) ** gamma
@@ -1169,36 +1181,51 @@ return _exposure_curve(linear, slope) ** gamma
 
 ### 6.14 CFW Definition and Pixel Detection
 
-#### 6.14.1 Single-Pixel Fringe Detection
+#### 6.14.1 Fringe Pixel Classification (`is_fringe_mask`)
 
-Pixel $x$ at defocus $z$ is marked as a **fringe pixel** if and only if the difference of any channel pair exceeds the threshold $\delta$:
+A pixel at position $x$ is classified as a **visible fringe pixel** when **all three** conditions hold simultaneously:
 
-$$\mathrm{Fringe}(x, z) = \mathbf{1}\!\left[\max\!\left(|I_R - I_G|,\;|I_R - I_B|,\;|I_G - I_B|\right) > \delta\right]$$
+1. **Not near-black:** Every channel exceeds the low threshold: $\min(I_R, I_G, I_B) > \delta_\text{low}$
+2. **Colour shift present:** At least one pairwise channel difference exceeds the threshold: $\max(|I_R - I_G|, |I_R - I_B|, |I_G - I_B|) > \delta$
+3. **Not saturated:** At least one channel is below the high threshold: $\min(I_R, I_G, I_B) < \delta_\text{high}$
 
-Default $\delta = 0.15$–$0.20$ (`COLOR_DIFF_THRESHOLD`).
+Default thresholds: $\delta = 0.20$ (`COLOR_DIFF_THRESHOLD`), $\delta_\text{low} = 0.15$, $\delta_\text{high} = 0.80$.
 
-Implementation (`cfw.py` lines 280–284):
+Implementation (`cfw.py` lines 276–304, `is_fringe_mask`):
 ```python
-return int(
-    abs(r - g) > threshold
-    or abs(r - b) > threshold
-    or abs(g - b) > threshold
+cond1 = (r > low_threshold) & (g > low_threshold) & (b > low_threshold)
+cond2 = (
+    (np.abs(r - g) > diff_threshold)
+    | (np.abs(r - b) > diff_threshold)
+    | (np.abs(g - b) > diff_threshold)
 )
+cond3 = np.minimum(np.minimum(r, g), b) < high_threshold
+return cond1 & cond2 & cond3
 ```
 
-#### 6.14.2 Total CFW
+#### 6.14.2 Total CFW (Outer-Boundary Method)
 
-Sum over the scan window $x \in [-400, 400]$ (µm, 1 µm step):
+The CFW is defined as the distance (µm) from the **first** fringed pixel to the **last** fringed pixel in the scan window $x \in [-400, 400]$ µm:
 
-$$\boxed{\mathrm{CFW}(z) = \sum_{x=-400}^{400} \mathrm{Fringe}(x, z) \quad (\mu\mathrm{m})}$$
+$$\boxed{\mathrm{CFW}(z) = x_\text{last} - x_\text{first} + 1 \quad (\mu\mathrm{m})}$$
+
+where $x_\text{first}$ and $x_\text{last}$ are the outermost positions satisfying the fringe mask.  This outer-boundary definition is robust against threshold jitter that creates small internal gaps in the mask.
 
 (Pixel pitch is 1 µm, so pixel count = µm width)
 
-Implementation (`cfw.py` lines 287–318):
+Implementation (`cfw.py` lines 334–378):
 ```python
 def fringe_width(z_um, *, ...):
-    xs = np.arange(-half, half + 1, dtype=np.int32)   # Default half=400
-    return int(sum(detect_fringe_binary(float(x), z_um, ...) for x in xs))
+    xs = np.arange(-half, half + 1, dtype=np.float64)
+    r, g, b = edge_rgb_response_vec(xs, z_um, ...)
+    fringed = is_fringe_mask(r, g, b, diff_threshold=thr)
+    return _cfw_from_mask(fringed)   # outer boundary: last − first + 1
+
+def _cfw_from_mask(fringed, gap_fill=5):
+    indices = np.flatnonzero(fringed)
+    if indices.size == 0:
+        return 0
+    return int(indices[-1] - indices[0] + 1)
 ```
 
 ---
@@ -1230,7 +1257,7 @@ Load sensor model (default: Sony A900).
 
 Parameters: `num_rays=400`, `grid_size=512`, `wl_stride=3`, `strategy="chief_ray"`
 
-Calls `bake_wavelength_esfs()` for 25 z-values ($z \in [-800, +400]$, 50 µm step) × 11 wavelengths (400–700 nm, 30 nm step), caching results to `_esf_mono_cache`. This step only needs re-running when the **optical system changes**.
+Calls `bake_wavelength_esfs()` for 29 z-values ($z \in [-800, +600]$, 50 µm step) × 11 wavelengths (400–700 nm, 30 nm step), caching results to `_esf_mono_cache`. This step only needs re-running when the **optical system changes**.
 
 **Stage 3b — Apply Sensor Weights (Sensor-Specific):**
 
@@ -1282,27 +1309,25 @@ Each row shows one z-value across three columns:
 **Step 2: Precompute Aberration Data**
 
 ```python
-paraxial_curve     = compute_chl_curve(lens1, wavelengths_nm=sensor_wl)
-rori_curve, spot_curve = compute_rori_spot_curves(lens1, wavelengths_nm=sensor_wl)
-sa_poly_curve      = compute_sa_poly_curves(lens1, wavelengths_nm=sensor_wl)
-w040_curve         = compute_w040_curve(lens1, wavelengths_nm=sensor_wl)
-ray_fan            = precompute_ray_fan(lens1)
-# → 32 ρ nodes × 31 wavelengths
+paraxial_curve = compute_chl_curve(lens1, wavelengths_nm=sensor_wl)
+rori1_curve, spot1_curve = compute_rori1_spot_curves(lens1, wavelengths_nm=sensor_wl)
+rori4_curve, spot4_curve = compute_rori4_spot_curves(lens1, wavelengths_nm=sensor_wl)
+ray_fan_5  = precompute_ray_fan(lens1, num_rho=5)   # coarse
+ray_fan_16 = precompute_ray_fan(lens1, num_rho=16)  # medium
+ray_fan_32 = precompute_ray_fan(lens1, num_rho=32)  # fine
 ```
 
 Measured results:
 ```
-spot_curve rho_sa range: 11.8 – 18.4 µm (mean 16.8 µm)
-sa_poly c₃    : 24.5 – 46.6 µm
-sa_poly c₅    : -101.7 – -57.7 µm
-w040_curve W040 range:   1.871 – 3.141 µm OPD
+RoRi-1 spot rho_sa range: 11.8 – 18.4 µm (mean 16.8 µm)
+RoRi-4 spot rho_sa range: 10.4 – 16.3 µm (mean 14.9 µm)
 ```
 
 **Step 3: Diagnostic Plots (3 Groups)**
 
 - **3a.** Illuminant & sensor spectral response (raw vs. energy-normalised S·D products)
-- **3b.** Paraxial CHL vs. RoRi CHL curves (curve difference = spherochromatism contribution)
-- (SA residual blur ρ_sa(λ) is implicit in spot_curve)
+- **3b.** CHL curves (Paraxial vs RoRi-1 vs RoRi-4) — gap quantifies spherochromatism
+- **3c.** Per-pupil SA profile — compares scalar ρ³ model vs polynomial (c₃ρ³ + c₅ρ⁵) vs ray-fan ground truth
 
 **Step 4: Interactive Viewer**
 
@@ -1310,40 +1335,39 @@ Parameter controls:
 - **Defocus z**: ±700 µm, 5 µm step
 - **Gamma**: 1.0–3.0
 - **Exposure**: 1–8
-- **PSF model**: Pillbox / Gaussian / MZD (Multi-Zone Defocus) / Geometric fast / Geometric integral
-- **CHL curve**: RoRi / Paraxial
+- **PSF model**: Disc / Gaussian / Geometric Fast (ray fan)
+- **CHL curve**: RoRi-1 / RoRi-4 / Paraxial
 - **Include SA**: on/off
 
 **Step 5: Static Comparison Experiments** (controlled variable design)
 
-**5a — PSF Model Comparison (controlled variable: PSF shape)**
-
-Fixed: Paraxial CHL, no SA
+**5a — PSF Model Comparison (2×2 factorial: CHL × PSF)**
 
 | Model | Characteristics |
 |-------|----------------|
-| Pillbox + Paraxial | Hard-cutoff transition, most conservative |
-| Gaussian + Paraxial | Soft tails, closer to diffraction effects |
-| MZD + Paraxial | Multi-Zone Defocus, arcsin ring ESF with pupil integration |
+| Disc + Paraxial | Hard-cutoff linear transition |
+| Gaussian + Paraxial | Soft tails, closer to diffraction |
+| Disc + RoRi-1 | With spherochromatism |
+| Gaussian + RoRi-1 | With spherochromatism |
 
-**5b — Aberration Accuracy Comparison (controlled variable: CHL input fidelity)**
+**5b — Orthogonality Test (RoRi-1 vs RoRi-4 with SA)**
 
-Fixed: Gaussian PSF
+Tests whether the ρ²-weighted focal plane measurably changes CFW prediction:
 
 | Row | CHL | SA | Test item |
 |-----|-----|----|-----------|
-| 1 | Paraxial | off | Baseline (secondary spectrum only) |
-| 2 | RoRi | off | +spherochromatism |
-| 3 | RoRi | on | +residual SA blur |
+| 1 | RoRi-1 | on | Energy-weighted best focus |
+| 2 | RoRi-4 | on | Orthogonal best focus (CHL ⊥ SA) |
 
-**5c — Full-Input Comparison (including ray-fan ground truth)**
+**5c — Geometric Fast Convergence (GL node count)**
 
-| Row | PSF | Characteristics |
-|-----|-----|----------------|
-| 1 | Pillbox + RoRi + SA | — |
-| 2 | Gaussian + RoRi + SA | — |
-| 3 | MZD + RoRi + SA | — |
-| 4 | **Geometric fast (ray fan)** | **Real ray trace, no PSF assumption** |
+| Row | GL Nodes | Ray-Fan Bake Time |
+|-----|----------|-------------------|
+| 1 | 5 | ~3.4 s |
+| 2 | 16 | ~10.5 s |
+| 3 | 32 | ~20.7 s |
+
+Tests how many Gauss-Legendre nodes are needed for ESF convergence.
 
 The ray-fan model serves as the reference standard for analytic models:
 
@@ -1358,14 +1382,13 @@ $$\mathrm{ESF}(x;\,z,\lambda) = \sum_k \rho_k W_k \left[\frac{1}{\pi}\arcsin\!\l
 | Method | Typical Speed | Relative to FFT | Use Case |
 |--------|--------------|-----------------|----------|
 | FFT diffraction PSF | ~1 s/ESF | 1× | Ground truth |
-| Geometric integral ESF | ~10 ms/ESF | ~100× | Precise geometric validation |
-| Ray-fan extrapolation | ~0.1–1 ms/ESF | ~1000× | z-sweeps, interactive |
-| JIT analytic ESF | <0.01 ms/ESF | ~100000× | Parameter space exploration |
+| Ray-fan extrapolation (`compute_polychromatic_esf_geom`) | <1 ms/ESF | ~1000× | z-sweeps, interactive |
+| JIT analytic ESF (disc/gauss) | <0.01 ms/ESF | ~100000× | Parameter space exploration |
 
 ### 8.2 Computational Resources
 
-**FFT baking (two-stage, 25 z × 11 wavelengths = 275 monochromatic ESFs):**
-- Stage 1 storage: ~1.7 MB (11 × 801 × 25 × 8 bytes)
+**FFT baking (two-stage, 29 z × 11 wavelengths = 319 monochromatic ESFs):**
+- Stage 1 storage: ~2 MB (11 × 801 × 29 × 8 bytes)
 - Stage 2: microsecond-level weighted summation, no additional storage
 - Total time: ~1–3 minutes (CPU-dependent), 3× faster than old single-step method
 
@@ -1380,8 +1403,8 @@ $$\mathrm{ESF}(x;\,z,\lambda) = \sum_k \rho_k W_k \left[\frac{1}{\pi}\arcsin\!\l
 
 | Data Structure | Size |
 |---------------|------|
-| Monochromatic ESF cache (25 z × 11 wl × 801 points) | ~1.7 MB |
-| Polychromatic ESF cache (25 z × 3 ch × 801 points) | ~469 KB |
+| Monochromatic ESF cache (29 z × 11 wl × 801 points) | ~2.0 MB |
+| Polychromatic ESF cache (29 z × 3 ch × 801 points) | ~541 KB |
 | Ray-fan dict (32×31 double arrays) | ~16 KB |
 | Sensor response precomputation (3 × 31) | < 1 KB |
 
@@ -1414,19 +1437,17 @@ $$\mathrm{ESF}(x;\,z,\lambda) = \sum_k \rho_k W_k \left[\frac{1}{\pi}\arcsin\!\l
 
 | Quantity | Range | Description |
 |----------|-------|-------------|
-| $\rho_{sa}(\lambda)$ | 11.8 – 18.4 µm (mean 16.8 µm) | RMS residual SA blur |
-| $c_3(\lambda)$ | 24.5 – 46.6 µm | Primary SA polynomial coefficient |
-| $c_5(\lambda)$ | −101.7 – −57.7 µm | Secondary SA polynomial coefficient |
-| $W_{040}(\lambda)$ | 1.871 – 3.141 µm OPD | Seidel SA coefficient |
+| $\rho_{sa}(\lambda)$ (RoRi-1) | 11.8 – 18.4 µm (mean 16.8 µm) | RMS residual SA blur at RoRi-1 plane |
+| $\rho_{sa}(\lambda)$ (RoRi-4) | 10.4 – 16.3 µm (mean 14.9 µm) | RMS residual SA blur at RoRi-4 plane |
 | FNO (measured) | 2.0 | Working f-number |
 | Focal length | 85.0 mm | Measured |
 
 ### 9.3 CFW Comparison (Expected Patterns from Static Experiments)
 
 - **Higher exposure** → larger CFW (low-contrast fringes become visible), but at very high exposure saturation causes CFW to decrease
-- **RoRi vs. Paraxial**: In fast lenses with significant spherochromatism, RoRi predictions are closer to reality
+- **RoRi-1 vs. Paraxial**: In fast lenses with significant spherochromatism, RoRi-1 predictions are closer to reality
 - **Including SA**: $\rho_{sa}$ increases total blur, widening the CFW vs. z curve (larger fringe region)
-- **MZD vs. Gaussian**: MZD uses arcsin ring ESF with pupil-resolved SA, better capturing PSF asymmetry when SA is significant
+- **RoRi-1 vs. RoRi-4**: The orthogonal focal plane (RoRi-4) reduces the SA component but may shift CFW peak position
 
 ---
 
@@ -1470,13 +1491,13 @@ Loaded via Optiland `fileio.load_zemax_file()`, returning an `Optic` object supp
 |-----------|--------------|-------------|
 | `DEFAULT_FNUMBER` | 1.4 | Default f-number (can be overridden by measured lens data) |
 | `EXPOSURE_SLOPE` | 8.0 | tanh tone curve slope |
-| `DISPLAY_GAMMA` | 2.2 | sRGB Gamma |
+| `DISPLAY_GAMMA` | 1.8 | Display gamma |
 | `COLOR_DIFF_THRESHOLD` | 0.2 | Fringe detection threshold |
 | `EDGE_HALF_WINDOW_PX` | 400 | Scan half-window (pixels) |
-| `DEFAULT_PSF_MODE` | `"gauss"` | Default PSF model |
+| `DEFAULT_PSF_MODE` | `"gauss"` | Default PSF model (allowed: `"disc"`, `"gauss"`) |
 | `num_rho` | 32 | Gauss-Legendre pupil quadrature nodes |
 | `wl_stride` | 1 | Wavelength subsampling stride (1 = all 31 wavelengths) |
-| Default sensor (cfw.py) | Nikon D700 | Module load: `sensor_model="nikond700"` |
+| Default sensor (cfw.py) | Sony A900 | Module load: `sensor_model="sonya900"` |
 | Default sensor (spectrum_loader) | Sony A900 | `channel_products()` default: `sensor_model="sonya900"` |
 
 ### A.2 Formula Quick Reference
@@ -1488,15 +1509,14 @@ Loaded via Optiland `fileio.load_zemax_file()`, returning an `Optic` object supp
 | RoRi weighting | $\text{RoRi} = \sum w_i \cdot \text{SK}(\rho_i) / 42$ |
 | W040 coefficient | $W_{040} = -\text{TA}_\text{marginal\,µm} / (8N)$ |
 | SA blur (RMS) | $\rho_{sa} = \sqrt{\sum w_i y_\text{spot}^2 / \sum w_i}$ |
-| Pillbox ESF | $\frac{1}{2}(1 + x/\rho)$, linear on $[-\rho, \rho]$ |
+| Disc (Pillbox) ESF | $\frac{1}{2}(1 + x/\rho)$, linear on $[-\rho, \rho]$ |
 | Gaussian ESF | $\frac{1}{2}[1 + \text{erf}(x/(\sqrt{2}\cdot 0.5\rho))]$ |
-| MZD ring ESF | $\arcsin(\mathrm{clip}(x/R, -1, 1))/\pi + 1/2$, with $R_k = \sqrt{(\rho_k \rho_\text{CHL})^2 + \mathrm{TA}_\text{SA}^2}$ |
 | Geometric integral ESF | $\int_0^1 [\arcsin(x/R(\rho))/\pi + \tfrac{1}{2}]\,2\rho\,d\rho$ |
 | Ray-fan extrapolation | $R(\rho;z,\lambda) = \|\text{TA}_0 + m\cdot z\|$ |
 | FFT pixel pitch | $dx = \lambda \cdot N / Q$, $Q = \text{grid\_size}/(\text{num\_rays}-1)$ |
 | Spectral integration | $\text{ESF}_c(x,z) = \sum_j \hat{w}_j \cdot \text{ESF}_\text{mono}(x;\rho(z,\lambda_j))$ |
 | Tone mapping | $I = (\tanh(\alpha \cdot \text{ESF}) / \tanh(\alpha))^\gamma$ |
-| CFW definition | $\text{CFW}(z) = \sum_x \mathbf{1}[\max(\|R-G\|,\|R-B\|,\|G-B\|) > \delta]$ |
+| CFW definition (outer boundary) | $\text{CFW}(z) = x_\text{last} - x_\text{first} + 1$, where fringe mask = `is_fringe_mask(r,g,b)` |
 
 ---
 
