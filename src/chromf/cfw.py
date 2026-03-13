@@ -130,6 +130,41 @@ def _edge_response_jit(
     return _exposure_curve(linear, slope) ** gamma
 
 
+@njit(cache=True)
+def _edge_response_vec_jit(
+    x_arr: np.ndarray,
+    z: float,
+    slope: float,
+    gamma: float,
+    sensor: np.ndarray,
+    chl_curve: np.ndarray,
+    f_number: float,
+    psf_kind: Literal["geom", "gauss"],
+    sa_curve: np.ndarray,
+) -> np.ndarray:
+    """Vectorised variant of _edge_response_jit: processes an array of x values."""
+    denom = _sqrt(4.0 * f_number ** 2 - 1.0)
+    norm = 0.0
+    for n in range(sensor.size):
+        norm += sensor[n]
+    N = x_arr.shape[0]
+    result = np.empty(N)
+    for i in range(N):
+        x = x_arr[i]
+        acc = 0.0
+        for n in range(chl_curve.size):
+            rho_chl = _fabs((z - chl_curve[n]) / denom)
+            rho = _sqrt(rho_chl ** 2 + sa_curve[n] ** 2)
+            if psf_kind == "geom":
+                weight = _geom_esf(x, rho)
+            else:
+                weight = _gauss_esf(x, rho)
+            acc += sensor[n] * weight
+        linear = acc / norm if norm > 0.0 else 0.0
+        result[i] = _exposure_curve(linear, slope) ** gamma
+    return result
+
+
 # =============================================================================
 #                               Public API
 # =============================================================================
@@ -195,6 +230,49 @@ def edge_rgb_response(
     )
 
 
+def edge_rgb_response_vec(
+    x_arr: np.ndarray,
+    z_um: float,
+    *,
+    exposure_slope: float | None = None,
+    gamma: float | None = None,
+    chl_curve_um: np.ndarray,
+    sa_curve_um: np.ndarray | None = None,
+    f_number: float = DEFAULT_FNUMBER,
+    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
+    sensor_response: dict[str, np.ndarray] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorised RGB edge response for an array of x positions.
+
+    Equivalent to calling ``edge_rgb_response`` for each element of *x_arr*
+    but dispatches to Numba only 3 times (once per channel) regardless of
+    array length, eliminating Python-loop overhead in ``fringe_width`` and
+    ``compute_pair_diffs``.
+
+    Returns
+    -------
+    r, g, b : np.ndarray
+        Tone-curve-applied ESF values, same shape as *x_arr*.
+    """
+    if psf_mode not in ALLOWED_PSF_MODES:
+        raise ValueError(f"psf_mode must be one of {ALLOWED_PSF_MODES}")
+    _sr = SENSOR_RESPONSE if sensor_response is None else sensor_response
+    slope = EXPOSURE_SLOPE if exposure_slope is None else float(exposure_slope)
+    gamma_val = DISPLAY_GAMMA if gamma is None else float(gamma)
+    chl = chl_curve_um.astype(np.float64, copy=False)
+    sa = (np.zeros_like(chl, dtype=np.float64)
+          if sa_curve_um is None
+          else sa_curve_um.astype(np.float64, copy=False))
+    xa = np.ascontiguousarray(x_arr, dtype=np.float64)
+    r = _edge_response_vec_jit(xa, float(z_um), slope, gamma_val,
+                               _sr["R"], chl, float(f_number), psf_mode, sa)  # type: ignore[arg-type]
+    g = _edge_response_vec_jit(xa, float(z_um), slope, gamma_val,
+                               _sr["G"], chl, float(f_number), psf_mode, sa)  # type: ignore[arg-type]
+    b = _edge_response_vec_jit(xa, float(z_um), slope, gamma_val,
+                               _sr["B"], chl, float(f_number), psf_mode, sa)  # type: ignore[arg-type]
+    return r, g, b
+
+
 def detect_fringe_binary(
     x_px: float,
     z_um: float,
@@ -237,21 +315,14 @@ def fringe_width(
     sensor_response: dict[str, np.ndarray] | None = None,
 ) -> int:
     half = EDGE_HALF_WINDOW_PX if xrange_val is None else int(xrange_val)
-    xs = np.arange(-half, half + 1, dtype=np.int32)
-    return int(
-        sum(
-            detect_fringe_binary(
-                float(x),
-                z_um,
-                exposure_slope=exposure_slope,
-                gamma=gamma,
-                chl_curve_um=chl_curve_um,
-                sa_curve_um=sa_curve_um,
-                f_number=f_number,
-                psf_mode=psf_mode,
-                color_diff_threshold=color_diff_threshold,
-                sensor_response=sensor_response,
-            )
-            for x in xs
-        )
+    xs = np.arange(-half, half + 1, dtype=np.float64)
+    r, g, b = edge_rgb_response_vec(
+        xs, z_um,
+        exposure_slope=exposure_slope, gamma=gamma,
+        chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
+        f_number=f_number, psf_mode=psf_mode,
+        sensor_response=sensor_response,
     )
+    thr = COLOR_DIFF_THRESHOLD if color_diff_threshold is None else color_diff_threshold
+    fringed = (np.abs(r - g) > thr) | (np.abs(r - b) > thr) | (np.abs(g - b) > thr)
+    return int(fringed.sum())
