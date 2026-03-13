@@ -30,3 +30,7 @@ chromf = [
   "data/raw/*.csv",
   # "data/*.xlsx",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Ruff cannot track cross-cell imports in Jupyter notebooks; suppress false positives.
+"*.ipynb" = ["F821"]

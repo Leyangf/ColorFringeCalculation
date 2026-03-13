@@ -22,7 +22,7 @@ ChromFringe/
 │   ├── cfw_geom_demo.ipynb     ← Primary notebook: geometric / analytic PSF models
 │   └── cfw_fftpsf_demo.ipynb   ← Validation notebook: FFT diffraction ground truth
 └── src/chromf/
-    ├── __init__.py             ← Public API (re-exports 16 functions)
+    ├── __init__.py             ← Public API (re-exports 18 functions)
     ├── cfw.py                  ← Core CFW kernels (Numba JIT)
     ├── spectrum_loader.py      ← Spectral data loading & normalisation
     └── optiland_bridge.py      ← Aberration extraction from Optiland lens models
@@ -56,14 +56,13 @@ import chromf
 
 # Load a lens and extract aberration curves
 lens = fileio.load_zemax_file("data/lens/NikonAINikkor85mmf2S.zmx")
-chl = chromf.compute_rori_chl_curve(lens)
-_, spot = chromf.compute_rori_spot_curves(lens)
+chl_curve, spot_curve = chromf.compute_rori1_spot_curves(lens)
 
 # Compute CFW at 200 µm defocus
 cfw = chromf.fringe_width(
     z_um=200.0,
-    chl_curve_um=chl[:, 1],
-    sa_curve_um=spot[:, 1],
+    chl_curve_um=chl_curve[:, 1],
+    rho_sa_um=spot_curve[:, 1],
     f_number=2.0,
     psf_mode="gauss",
 )
@@ -76,24 +75,27 @@ print(f"CFW = {cfw} µm")
 
 The primary research notebook. Loads a lens, extracts aberration curves, and provides:
 
-1. **Interactive viewer** — real-time R/G/B ESF and pseudo-density fringe map with sliders for defocus, exposure, gamma, and PSF model.
-2. **Static comparisons** — controlled-variable experiments: PSF model fidelity, aberration input fidelity, and full-input CFW sweeps.
+1. **Diagnostic plots** — illuminant & sensor spectral responses, CHL curves (paraxial / RoRi-1 / RoRi-4), and per-pupil SA profile comparison (scalar ρ³ model vs polynomial fit vs ray-fan ground truth).
+2. **Interactive viewer** — real-time R/G/B ESF and pseudo-density fringe map with sliders for defocus, exposure, gamma, PSF model, CHL curve, and SA toggle.
+3. **Static comparisons** — controlled-variable experiments:
+   - **5a:** 2×2 factorial — CHL model (Paraxial / RoRi-1) × PSF shape (Disc / Gaussian), no SA.
+   - **5b:** Orthogonality test — RoRi-1 vs RoRi-4 with SA enabled.
+   - **5c:** Geom Fast node count convergence (5 / 16 / 32 GL nodes).
 
 Aberration curves extracted per wavelength:
 - Paraxial CHL (secondary spectrum from marginal-ray trace)
-- RoRi CHL (aperture-weighted, includes spherochromatism)
-- Residual SA spot radius ρ_sa(λ)
-- SA polynomial coefficients c₃, c₅ (3rd + 5th order)
-- W040 Seidel coefficient
+- RoRi-1 CHL (energy-weighted best focus, includes spherochromatism)
+- RoRi-4 CHL (ρ²-weighted, orthogonal decomposition)
+- Residual SA spot radius ρ_SA(λ)
 
-**PSF models:** Pillbox · Gaussian · Multi-Zone Defocus (MZD) · Geometric fast (ray-fan) · Geometric integral (Gauss-Legendre).
+**PSF models:** Disc (pillbox) · Gaussian · Geometric Fast (ray-fan with Gauss-Legendre pupil integration).
 
 ### `cfw_fftpsf_demo.ipynb` — FFT Diffraction Validation
 
 Computes polychromatic ESFs from first principles (FFT Fraunhofer diffraction). Serves as the ground-truth reference.
 
 **Two-stage baking** for efficiency:
-- *Stage 1 (sensor-independent):* Bake monochromatic ESFs via FFT (25 defocus × 11 wavelengths). Re-run only when optics change.
+- *Stage 1 (sensor-independent):* Bake monochromatic ESFs via FFT (29 defocus × 11 wavelengths, ±700 µm). Re-run only when optics change.
 - *Stage 2 (sensor-specific):* Apply spectral weights per channel/camera (microseconds). Re-run when switching sensor models.
 
 This is **3× faster** than single-step per-channel baking (6× with two cameras).
@@ -107,14 +109,16 @@ Numba JIT-compiled inner loops for CFW computation.
 | Function | Description |
 |---|---|
 | `edge_response(channel, x_px, z_um, ...)` | Single-channel ESF value at pixel x, defocus z |
-| `edge_rgb_response(x_px, z_um, ...)` | R, G, B ESF tuple |
+| `edge_rgb_response(x_px, z_um, ...)` | R, G, B ESF tuple (scalar x) |
+| `edge_rgb_response_vec(x_arr, z_um, ...)` | R, G, B ESF arrays (vectorised) |
 | `detect_fringe_binary(x_px, z_um, ...)` | 1 if pixel is colour-fringed, else 0 |
+| `is_fringe_mask(R, G, B, ...)` | Boolean mask of visible fringe pixels |
 | `fringe_width(z_um, ...)` | Total CFW in µm at the given defocus |
 | `load_sensor_response(model)` | Build R/G/B spectral-weight dict for a camera model |
 
-All functions accept `chl_curve_um`, `sa_curve_um`, `f_number`, `psf_mode`, `exposure_slope`, `gamma`, and `sensor_response` as keyword arguments.
+All functions accept `chl_curve_um`, `rho_sa_um`, `f_number`, `psf_mode`, `exposure_slope`, `gamma`, and `sensor_response` as keyword arguments.
 
-**PSF modes:** `"geom"` (Pillbox), `"gauss"` (Gaussian), `"mzd"` (Multi-Zone Defocus with arcsin ring ESF and Gauss-Legendre pupil integration).
+**PSF modes:** `"disc"` (Pillbox), `"gauss"` (Gaussian).
 
 ### `spectrum_loader.py` — Spectral Data
 
@@ -131,18 +135,13 @@ Extracts aberration data from an Optiland `Optic` object and computes ESFs at mu
 | Function | Output |
 |---|---|
 | `compute_chl_curve` | Paraxial CHL [λ, µm] |
-| `compute_rori_chl_curve` | Aperture-weighted RoRi CHL [λ, µm] |
-| `compute_rori_spot_curves` | RoRi CHL + residual SA spot radius |
-| `compute_sa_poly_curves` | SA polynomial coefficients c₃, c₅ per wavelength |
-| `compute_w040_curve` | Seidel W040 [λ, µm OPD] |
+| `compute_rori1_spot_curves` | RoRi-1 CHL + residual SA spot radius (energy-weighted) |
+| `compute_rori4_spot_curves` | RoRi-4 CHL + residual SA spot radius (ρ²-weighted) |
 | `precompute_ray_fan` | Pre-traced ray fan for fast z-extrapolation |
 | `compute_polychromatic_esf` | FFT diffraction ESF (ground truth, ~1 s/ESF) |
-| `compute_polychromatic_esf_geometric` | Geometric pupil-integral ESF (~100× faster) |
-| `compute_polychromatic_esf_fast` | Ray-fan linear extrapolation ESF (~1000× faster) |
+| `compute_polychromatic_esf_geom` | Geometric ESF via pre-traced ray fan (~1000× faster) |
 | `bake_wavelength_esfs` | Sensor-independent monochromatic ESF grid (FFT) |
 | `apply_sensor_weights` | Combine baked ESFs with sensor spectral weights (µs) |
-| `compute_polychromatic_psf` | 2D polychromatic diffraction PSF |
-| `compute_cfw_psf` | CFW computed directly from 2D diffraction PSF |
 
 ## Key Concepts
 
@@ -155,9 +154,8 @@ $$\text{CFW}(z) = \sum_x \mathbf{1}\!\left[\max(|R-G|,\,|R-B|,\,|G-B|) > \delta\
 | Level | Method | Speed | Accuracy |
 |-------|--------|-------|----------|
 | 0 | FFT diffraction PSF | ~1 s/ESF | Includes diffraction |
-| 1 | Geometric pupil integral | ~10 ms/ESF | Geometrically exact |
-| 2 | Ray-fan extrapolation | <1 ms/ESF | Linear error O((z/f')²) |
-| 3 | Analytic ESF (Pillbox/Gauss/MZD) | <0.01 ms/ESF | Parametric approximation |
+| 1 | Geometric ray-fan ESF | <1 ms/ESF | Geometrically exact, linear z-extrapolation |
+| 2 | Analytic ESF (Disc/Gaussian) | <0.01 ms/ESF | Parametric approximation |
 
 ## Dependencies
 
@@ -168,7 +166,6 @@ $$\text{CFW}(z) = \sum_x \mathbf{1}\!\left[\max(|R-G|,\,|R-B|,\,|G-B|) > \delta\
 | Matplotlib | Plotting |
 | ipywidgets | Interactive sliders in notebooks |
 | Optiland | Lens prescription and ray tracing |
-| comtypes | Windows COM bridge (optional, for Zemax export) |
 
 See `environment.yml` for the full pinned environment (Python 3.13, NumPy 2.2, Numba 0.61).
 
