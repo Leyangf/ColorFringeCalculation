@@ -214,7 +214,7 @@ def compute_sa_poly_curves(
     -------
     np.ndarray, shape (N, 3)
         ``[λ_nm, c₃_µm, c₅_µm]`` — polynomial coefficients per wavelength.
-        Use with ``psf_mode='mzd'`` via ``sa_poly_um=result[:, 1:]``.
+        Polynomial coefficients for spherical aberration modelling.
     """
     wls, _ = _resolve_wl_grid(optic, wavelengths_nm, None)
     fno    = float(optic.paraxial.FNO())
