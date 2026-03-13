@@ -7,7 +7,7 @@ longitudinal chromatic aberration (LCA).
 """
 
 from __future__ import annotations
-from math import asin as _asin, erf as _erf, fabs as _fabs, sqrt as _sqrt
+from math import erf as _erf, fabs as _fabs, sqrt as _sqrt
 from typing import Literal
 
 import numpy as np
@@ -30,7 +30,7 @@ DISPLAY_GAMMA: float = 2.2
 COLOR_DIFF_THRESHOLD: float = 0.2
 EDGE_HALF_WINDOW_PX: int = 400
 
-ALLOWED_PSF_MODES: tuple[str, ...] = ("geom", "gauss", "mzd")
+ALLOWED_PSF_MODES: tuple[str, ...] = ("geom", "gauss")
 DEFAULT_PSF_MODE: Literal["gauss"] = "gauss"
 
 # Pre-compute default energy-normalised sensor-response · daylight curves (S·D)
@@ -101,80 +101,6 @@ def _gauss_esf(x: float, rho: float) -> float:
 
 
 
-# Gauss-Legendre nodes & weights for multi-zone defocus (MZD) pupil integration.
-# 16 points on [0, 1]; Σ ρ_k·W_k ≈ 2·∫₀¹ ρ dρ = 1.0.
-_MZD_NRHO = 16
-_xi_gl, _w_gl_raw = np.polynomial.legendre.leggauss(_MZD_NRHO)
-_RHO_GL = np.ascontiguousarray(0.5 * (_xi_gl + 1.0), dtype=np.float64)
-_W_GL   = np.ascontiguousarray(_w_gl_raw, dtype=np.float64)
-
-
-@njit(cache=True)
-def _mzd_edge_response_jit(
-    x: float,
-    z: float,
-    slope: float,
-    gamma: float,
-    sensor: np.ndarray,
-    chl_curve: np.ndarray,
-    f_number: float,
-    sa_curve: np.ndarray,
-    rho_gl: np.ndarray,
-    w_gl: np.ndarray,
-) -> float:
-    """Multi-zone defocus edge response with arcsin ring ESF (unsigned ρ³).
-
-    For each wavelength and each Gauss-Legendre pupil node ρ_k, the blur
-    radius combines defocus and SA in unsigned quadrature::
-
-        ρ_chl  = |z − CHL(λ)| / √(4N²−1)
-        TA_SA  = ρ_k³ · 2 · ρ_SA(λ)        (primary SA ∝ ρ³; ×2 ≈ RMS→marginal)
-        R_k    = √((ρ_k · ρ_chl)² + TA_SA²)
-
-    The per-ring ESF is the exact result for a thin annulus of radius R:
-
-        ESF_ring(x; R) = arcsin(clip(x/R, −1, 1)) / π + 0.5
-
-    Integrated over the pupil with area weights ρ_k · W_k.
-    """
-    PI = 3.141592653589793
-    denom = _sqrt(4.0 * f_number * f_number - 1.0)
-    n_rho = rho_gl.shape[0]
-    acc = 0.0
-    norm = 0.0
-
-    for n in range(sensor.size):
-        rho_chl = _fabs((z - chl_curve[n]) / denom)
-        sa = sa_curve[n]
-
-        wl_contrib = 0.0
-        for k in range(n_rho):
-            rk = rho_gl[k]
-            sa_zone = rk * rk * rk * 2.0 * sa   # TA_SA ∝ ρ³; ×2 ≈ RMS→marginal
-            R = _sqrt((rk * rho_chl) ** 2 + sa_zone * sa_zone)
-
-            if R < 1e-4:
-                f_val = 1.0 if x >= 0.0 else 0.0
-            else:
-                t = x / R
-                if t >= 1.0:
-                    f_val = 1.0
-                elif t <= -1.0:
-                    f_val = 0.0
-                else:
-                    f_val = _asin(t) / PI + 0.5
-
-            wl_contrib += f_val * rk * w_gl[k]
-
-        acc += sensor[n] * wl_contrib
-        norm += sensor[n]
-
-    if norm == 0.0:
-        return 0.0
-    linear = acc / norm
-    return _exposure_curve(linear, slope) ** gamma
-
-
 @njit(cache=True)
 def _edge_response_jit(
     x: float,
@@ -217,7 +143,7 @@ def edge_response(
     chl_curve_um: np.ndarray,
     sa_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss", "mzd"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
     sensor_response: dict[str, np.ndarray] | None = None,
 ) -> float:
     if psf_mode not in ALLOWED_PSF_MODES:
@@ -238,12 +164,6 @@ def edge_response(
           if sa_curve_um is None
           else sa_curve_um.astype(np.float64, copy=False))
 
-    if psf_mode == "mzd":
-        return _mzd_edge_response_jit(
-            float(x_px), float(z_um), slope, gamma_val,
-            sensor, chl, float(f_number), sa, _RHO_GL, _W_GL,
-        )
-
     return _edge_response_jit(
         float(x_px), float(z_um), slope, gamma_val,
         sensor, chl, float(f_number), psf_mode, sa,  # type: ignore[arg-type]
@@ -259,7 +179,7 @@ def edge_rgb_response(
     chl_curve_um: np.ndarray,
     sa_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss", "mzd"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
     sensor_response: dict[str, np.ndarray] | None = None,
 ) -> tuple[float, float, float]:
     kw = dict(
@@ -284,7 +204,7 @@ def detect_fringe_binary(
     chl_curve_um: np.ndarray,
     sa_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss", "mzd"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
     color_diff_threshold: float | None = None,
     sensor_response: dict[str, np.ndarray] | None = None,
 ) -> int:
@@ -311,7 +231,7 @@ def fringe_width(
     chl_curve_um: np.ndarray,
     sa_curve_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss", "mzd"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
     xrange_val: int | None = None,
     color_diff_threshold: float | None = None,
     sensor_response: dict[str, np.ndarray] | None = None,
