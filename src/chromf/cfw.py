@@ -100,6 +100,7 @@ def _gauss_esf(x: float, rho: float) -> float:
     return 0.5 * (1.0 + _erf(x / (_sqrt(2.0) * 0.5 * rho)))
 
 
+
 # Gauss-Legendre nodes & weights for multi-zone defocus (MZD) pupil integration.
 # 16 points on [0, 1]; Σ ρ_k·W_k ≈ 2·∫₀¹ ρ dρ = 1.0.
 _MZD_NRHO = 16
