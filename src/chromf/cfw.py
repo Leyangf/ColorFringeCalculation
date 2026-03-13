@@ -14,7 +14,7 @@ import numpy as np
 from numba import njit  # used by _edge_response_jit
 
 # ------------------------------------------------------------------------
-# Package-local imports (works both as top-level “cfw” and as “chromf.cfw”)
+# Package-local imports (works both as top-level "cfw" and as "chromf.cfw")
 # ------------------------------------------------------------------------
 try:
     from chromf.spectrum_loader import channel_products as _channel_products
@@ -30,7 +30,7 @@ DISPLAY_GAMMA: float = 2.2
 COLOR_DIFF_THRESHOLD: float = 0.2
 EDGE_HALF_WINDOW_PX: int = 400
 
-ALLOWED_PSF_MODES: tuple[str, ...] = ("geom", "gauss")
+ALLOWED_PSF_MODES: tuple[str, ...] = ("disc", "gauss")
 DEFAULT_PSF_MODE: Literal["gauss"] = "gauss"
 
 # Pre-compute default energy-normalised sensor-response · daylight curves (S·D)
@@ -81,8 +81,8 @@ def _exposure_curve(x: float, slope: float) -> float:
 
 
 @njit(cache=True)
-def _geom_esf(x: float, rho: float) -> float:
-    """Edge-spread function for a pillbox PSF."""
+def _disc_esf(x: float, rho: float) -> float:
+    """Edge-spread function for a disc (uniform pillbox) PSF."""
     if rho < 1e-6:
         return 1.0 if x >= 0.0 else 0.0
     if x >= rho:
@@ -110,7 +110,7 @@ def _edge_response_jit(
     sensor: np.ndarray,
     chl_curve: np.ndarray,
     f_number: float,
-    psf_kind: Literal["geom", "gauss"],
+    psf_kind: Literal["disc", "gauss"],
     sa_curve: np.ndarray,   # residual spot radius per wavelength (µm); zeros = no SA
 ) -> float:
     denom = _sqrt(4.0 * f_number**2.0 - 1.0)
@@ -118,8 +118,8 @@ def _edge_response_jit(
     for n in range(chl_curve.size):
         rho_chl = _fabs((z - chl_curve[n]) / denom)
         rho = _sqrt(rho_chl**2 + sa_curve[n]**2)   # quadrature: defocus ⊕ SA
-        if psf_kind == "geom":
-            weight = _geom_esf(x, rho)
+        if psf_kind == "disc":
+            weight = _disc_esf(x, rho)
         else:
             weight = _gauss_esf(x, rho)
         acc += sensor[n] * weight
@@ -139,7 +139,7 @@ def _edge_response_vec_jit(
     sensor: np.ndarray,
     chl_curve: np.ndarray,
     f_number: float,
-    psf_kind: Literal["geom", "gauss"],
+    psf_kind: Literal["disc", "gauss"],
     sa_curve: np.ndarray,
 ) -> np.ndarray:
     """Vectorised variant of _edge_response_jit: processes an array of x values."""
@@ -155,8 +155,8 @@ def _edge_response_vec_jit(
         for n in range(chl_curve.size):
             rho_chl = _fabs((z - chl_curve[n]) / denom)
             rho = _sqrt(rho_chl ** 2 + sa_curve[n] ** 2)
-            if psf_kind == "geom":
-                weight = _geom_esf(x, rho)
+            if psf_kind == "disc":
+                weight = _disc_esf(x, rho)
             else:
                 weight = _gauss_esf(x, rho)
             acc += sensor[n] * weight
@@ -170,15 +170,15 @@ def _edge_response_vec_jit(
 # =============================================================================
 def edge_response(
     channel: Literal["R", "G", "B"],
-    x_px: float,
+    x_um: float,
     z_um: float,
     *,
     exposure_slope: float | None = None,
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
-    sa_curve_um: np.ndarray | None = None,
+    rho_sa_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["disc", "gauss"] = DEFAULT_PSF_MODE,
     sensor_response: dict[str, np.ndarray] | None = None,
 ) -> float:
     if psf_mode not in ALLOWED_PSF_MODES:
@@ -196,37 +196,37 @@ def edge_response(
     chl = chl_curve_um.astype(np.float64, copy=False)
 
     sa = (np.zeros_like(chl, dtype=np.float64)
-          if sa_curve_um is None
-          else sa_curve_um.astype(np.float64, copy=False))
+          if rho_sa_um is None
+          else rho_sa_um.astype(np.float64, copy=False))
 
     return _edge_response_jit(
-        float(x_px), float(z_um), slope, gamma_val,
+        float(x_um), float(z_um), slope, gamma_val,
         sensor, chl, float(f_number), psf_mode, sa,  # type: ignore[arg-type]
     )
 
 
 def edge_rgb_response(
-    x_px: float,
+    x_um: float,
     z_um: float,
     *,
     exposure_slope: float | None = None,
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
-    sa_curve_um: np.ndarray | None = None,
+    rho_sa_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["disc", "gauss"] = DEFAULT_PSF_MODE,
     sensor_response: dict[str, np.ndarray] | None = None,
 ) -> tuple[float, float, float]:
     kw = dict(
         exposure_slope=exposure_slope, gamma=gamma,
-        chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
+        chl_curve_um=chl_curve_um, rho_sa_um=rho_sa_um,
         f_number=f_number, psf_mode=psf_mode,
         sensor_response=sensor_response,
     )
     return (
-        edge_response("R", x_px, z_um, **kw),  # type: ignore[arg-type]
-        edge_response("G", x_px, z_um, **kw),  # type: ignore[arg-type]
-        edge_response("B", x_px, z_um, **kw),  # type: ignore[arg-type]
+        edge_response("R", x_um, z_um, **kw),  # type: ignore[arg-type]
+        edge_response("G", x_um, z_um, **kw),  # type: ignore[arg-type]
+        edge_response("B", x_um, z_um, **kw),  # type: ignore[arg-type]
     )
 
 
@@ -237,9 +237,9 @@ def edge_rgb_response_vec(
     exposure_slope: float | None = None,
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
-    sa_curve_um: np.ndarray | None = None,
+    rho_sa_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["disc", "gauss"] = DEFAULT_PSF_MODE,
     sensor_response: dict[str, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Vectorised RGB edge response for an array of x positions.
@@ -261,8 +261,8 @@ def edge_rgb_response_vec(
     gamma_val = DISPLAY_GAMMA if gamma is None else float(gamma)
     chl = chl_curve_um.astype(np.float64, copy=False)
     sa = (np.zeros_like(chl, dtype=np.float64)
-          if sa_curve_um is None
-          else sa_curve_um.astype(np.float64, copy=False))
+          if rho_sa_um is None
+          else rho_sa_um.astype(np.float64, copy=False))
     xa = np.ascontiguousarray(x_arr, dtype=np.float64)
     r = _edge_response_vec_jit(xa, float(z_um), slope, gamma_val,
                                _sr["R"], chl, float(f_number), psf_mode, sa)  # type: ignore[arg-type]
@@ -274,23 +274,23 @@ def edge_rgb_response_vec(
 
 
 def detect_fringe_binary(
-    x_px: float,
+    x_um: float,
     z_um: float,
     *,
     exposure_slope: float | None = None,
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
-    sa_curve_um: np.ndarray | None = None,
+    rho_sa_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["disc", "gauss"] = DEFAULT_PSF_MODE,
     color_diff_threshold: float | None = None,
     sensor_response: dict[str, np.ndarray] | None = None,
 ) -> int:
     threshold = COLOR_DIFF_THRESHOLD if color_diff_threshold is None else color_diff_threshold
     r, g, b = edge_rgb_response(
-        x_px, z_um,
+        x_um, z_um,
         exposure_slope=exposure_slope, gamma=gamma,
-        chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
+        chl_curve_um=chl_curve_um, rho_sa_um=rho_sa_um,
         f_number=f_number, psf_mode=psf_mode,
         sensor_response=sensor_response,
     )
@@ -307,9 +307,9 @@ def fringe_width(
     exposure_slope: float | None = None,
     gamma: float | None = None,
     chl_curve_um: np.ndarray,
-    sa_curve_um: np.ndarray | None = None,
+    rho_sa_um: np.ndarray | None = None,
     f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["geom", "gauss"] = DEFAULT_PSF_MODE,
+    psf_mode: Literal["disc", "gauss"] = DEFAULT_PSF_MODE,
     xrange_val: int | None = None,
     color_diff_threshold: float | None = None,
     sensor_response: dict[str, np.ndarray] | None = None,
@@ -319,7 +319,7 @@ def fringe_width(
     r, g, b = edge_rgb_response_vec(
         xs, z_um,
         exposure_slope=exposure_slope, gamma=gamma,
-        chl_curve_um=chl_curve_um, sa_curve_um=sa_curve_um,
+        chl_curve_um=chl_curve_um, rho_sa_um=rho_sa_um,
         f_number=f_number, psf_mode=psf_mode,
         sensor_response=sensor_response,
     )

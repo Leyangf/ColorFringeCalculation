@@ -142,13 +142,13 @@ def compute_rori1_spot_curves(
         y_spot(Py) = [SK(Py) − RoRi(λ)] × Py / (2 × FNO)
         rho_sa(λ)  = sqrt( Σ w_i · y_spot(Py_i)² / Σ w_i )
 
-    Pass ``spot_curve[:, 1]`` as ``sa_curve_um=`` to
+    Pass ``spot_curve[:, 1]`` as ``rho_sa_um=`` to
     :func:`chromf.cfw.fringe_width` to include SA in the PSF model.
 
     Parameters
     ----------
     optic, wavelengths_nm, ref_wavelength_nm:
-        Same as :func:`compute_rori1_chl_curve`.
+        Same as :func:`compute_chl_curve`.
 
     Returns
     -------
@@ -188,135 +188,6 @@ def compute_rori1_spot_curves(
 
 
 
-def compute_sa_poly_curves(
-    optic,
-    wavelengths_nm: np.ndarray | None = None,
-    ref_wavelength_nm: float | None = None,
-) -> np.ndarray:
-    """Per-wavelength SA polynomial coefficients c₃, c₅ from RoRi pupil data.
-
-    Fits the residual transverse aberration at each wavelength's RoRi best
-    focus to a two-term pupil polynomial::
-
-        TA_SA(ρ, λ) ≈ c₃(λ)·ρ³ + c₅(λ)·ρ⁵
-
-    using the 4 non-trivial RoRi pupil zones (ρ ∈ {√¼, √½, √¾, 1}).
-    This captures both primary (3rd-order) and secondary (5th-order)
-    spherical aberration, giving a wavelength-dependent pupil profile
-    instead of the single-scalar ρ_SA.
-
-    Parameters
-    ----------
-    optic, wavelengths_nm, ref_wavelength_nm:
-        Same as :func:`compute_rori1_spot_curves`.
-
-    Returns
-    -------
-    np.ndarray, shape (N, 3)
-        ``[λ_nm, c₃_µm, c₅_µm]`` — polynomial coefficients per wavelength.
-        Polynomial coefficients for spherical aberration modelling.
-    """
-    wls, _ = _resolve_wl_grid(optic, wavelengths_nm, None)
-    fno    = float(optic.paraxial.FNO())
-    denom  = np.sqrt(4.0 * fno * fno - 1.0)
-    paraxial = optic.paraxial
-    z_start  = float(paraxial.surfaces.positions[1, 0]) - 1.0
-
-    _py = np.array(_RORI1_PY)
-    _w  = np.array(_RORI1_WEIGHTS, dtype=float)
-
-    # Design matrix for least-squares fit: TA = c₃ρ³ + c₅ρ⁵
-    rho_pts = _py[1:]  # 4 non-trivial pupil heights
-    A = np.column_stack([rho_pts**3, rho_pts**5])
-
-    c3_arr = np.empty(len(wls))
-    c5_arr = np.empty(len(wls))
-
-    for i, wl_nm in enumerate(wls):
-        wl_um = float(wl_nm) / 1000.0
-        sks = np.array(
-            [_paraxial_bfl(paraxial, float(wl_nm), z_start)]
-            + [_sk_real(optic, py, wl_um) for py in _RORI1_PY[1:]]
-        )
-        rori = float(np.dot(_w, sks) / _RORI1_SUM)
-        delta_sk_um = (sks - rori) * 1000.0       # mm → µm
-        ta_sa = delta_sk_um * _py / denom          # TA at RoRi-1 (µm)
-        # Fit c₃, c₅ from the 4 non-trivial points
-        coeffs, _, _, _ = np.linalg.lstsq(A, ta_sa[1:], rcond=None)
-        c3_arr[i] = coeffs[0]
-        c5_arr[i] = coeffs[1]
-
-    return np.column_stack((wls, c3_arr, c5_arr))
-
-
-def compute_w040_curve(
-    optic,
-    wavelengths_nm: np.ndarray | None = None,
-    ref_wavelength_nm: float | None = None,
-) -> np.ndarray:
-    """Primary spherical aberration coefficient W040 per wavelength (µm OPD).
-
-    Derived from the marginal-ray (ρ=1) transverse aberration at the RoRi
-    best-focus plane for each wavelength::
-
-        W040(λ) = −TA_marginal(λ) / (8 · FNO)
-
-    where  TA_marginal = [SK(ρ=1) − RoRi] · 1 / (2·FNO)  (mm), converted to
-    µm and negated to match the sign convention  TA = −2·FNO·dW/dρ.
-
-    Pass ``w040_curve[:, 1]`` as ``w040_curve_um=`` to
-    :func:`chromf.cfw.fringe_width` with ``psf_mode='dgauss'``.
-
-    Parameters
-    ----------
-    optic, wavelengths_nm, ref_wavelength_nm:
-        Same as :func:`compute_rori1_spot_curves`.
-
-    Returns
-    -------
-    np.ndarray, shape (N, 2)
-        ``[λ_nm, W040_µm]`` — spherical aberration wavefront coefficient.
-    """
-    wls, _ = _resolve_wl_grid(optic, wavelengths_nm, None)
-    fno = float(optic.paraxial.FNO())
-    paraxial = optic.paraxial
-    z_start = float(paraxial.surfaces.positions[1, 0]) - 1.0
-
-    _py = np.array(_RORI1_PY)
-    _w = np.array(_RORI1_WEIGHTS, dtype=float)
-
-    def _w040_at(wl_nm: float) -> float:
-        wl_um = wl_nm / 1000.0
-        sks = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
-                       + [_sk_real(optic, py, wl_um) for py in _RORI1_PY[1:]])
-        rori = float(np.dot(_w, sks) / _RORI1_SUM)
-        # Transverse aberration of marginal ray (ρ=1) at RoRi focus plane (mm):
-        ta_marginal_mm = (sks[-1] - rori) / (2.0 * fno)
-        # W040 = −TA_marginal_µm / (8·FNO)
-        return -(ta_marginal_mm * 1000.0) / (8.0 * fno)
-
-    w040_arr = np.array([_w040_at(float(wl)) for wl in wls])
-    return np.column_stack((wls, w040_arr))
-
-
-def compute_rori1_chl_curve(
-    optic,
-    wavelengths_nm: np.ndarray | None = None,
-    ref_wavelength_nm: float | None = None,
-) -> np.ndarray:
-    """Compute the aperture-dependent RoRi-1 CHL curve from an Optiland Optic.
-
-    Uses the 5-zone weighted average::
-
-        RoRi1 = (SK(0) + 12.8·SK(√¼) + 14.4·SK(√½) + 12.8·SK(√¾) + SK(1)) / 42
-
-    Returns
-    -------
-    np.ndarray, shape (N, 2)
-        Two-column array ``[λ_nm, RoRi1_CHL_µm]``.
-    """
-    chl_curve, _ = compute_rori1_spot_curves(optic, wavelengths_nm, ref_wavelength_nm)
-    return chl_curve
 
 
 def compute_rori4_spot_curves(
@@ -380,24 +251,6 @@ def compute_rori4_spot_curves(
     return np.column_stack((wls, chl_um)), np.column_stack((wls, rho_sa_um))
 
 
-def compute_rori4_chl_curve(
-    optic,
-    wavelengths_nm: np.ndarray | None = None,
-    ref_wavelength_nm: float | None = None,
-) -> np.ndarray:
-    """Compute the aperture-dependent RoRi-4 CHL curve from an Optiland Optic.
-
-    Uses the ρ²-weighted mean (orthogonal best-focus plane)::
-
-        RoRi4 = (3.2·SK(√¼) + 7.2·SK(√½) + 9.6·SK(√¾) + 1·SK(1)) / 21
-
-    Returns
-    -------
-    np.ndarray, shape (N, 2)
-        Two-column array ``[λ_nm, RoRi4_CHL_µm]``.
-    """
-    chl_curve, _ = compute_rori4_spot_curves(optic, wavelengths_nm, ref_wavelength_nm)
-    return chl_curve
 
 # ── FFTPSF ground-truth CFW pipeline ─────────────────────────────────────────
 
@@ -648,7 +501,7 @@ def precompute_ray_fan(
     All 31 wavelengths (400–700 nm, 10 nm step) are traced; per-channel
     spectral weights are stored separately so a single fan covers R, G, B.
 
-    Pass the returned dict to :func:`compute_polychromatic_esf_fast` to
+    Pass the returned dict to :func:`compute_polychromatic_esf_geom` to
     evaluate ESFs at any z without further ray tracing.
 
     Parameters
@@ -699,7 +552,7 @@ def precompute_ray_fan(
     return fan
 
 
-def compute_polychromatic_esf_fast(
+def compute_polychromatic_esf_geom(
     ray_fan: dict,
     channel: str,
     z_defocus_um: float,
@@ -765,137 +618,14 @@ def compute_polychromatic_esf_fast(
     return np.clip(esf_accum, 0.0, 1.0)
 
 
-def compute_polychromatic_psf(
-    optic,
-    channel: str,
-    z_defocus_um: float,
-    num_rays: int = 128,
-    grid_size: int = 1024,
-    strategy: str = "best_fit_sphere",
-    sensor_model: str = "sonya900",
-) -> tuple[np.ndarray, float]:
-    """Compute the polychromatic diffraction PSF for one color channel.
-
-    Returns (psf_2d, dx_um):
-        psf_2d : np.ndarray, shape (grid_size, grid_size), energy-normalized (sum=1)
-        dx_um  : float, pixel pitch of the PSF array in µm
-    """
-    op = _optic_at_defocus(optic, z_defocus_um)
-
-    ch_key = _CHANNEL_MAP[channel.upper()]
-    products = _channel_products(sensor_model=sensor_model)
-    wl_nm = products[ch_key][:, 0]  # shape (31,)
-    g_k = products[ch_key][:, 1]    # shape (31,)
-
-    from optiland.psf import FFTPSF  # lazy import: keeps module loadable without optiland.psf
-
-    psf_accum = np.zeros((grid_size, grid_size), dtype=np.float64)
-    dx_um: float | None = None
-
-    for j in range(len(wl_nm)):
-        wl_um = wl_nm[j] / 1000.0
-        fft_psf = FFTPSF(op, field=(0, 0), wavelength=wl_um,
-                         num_rays=num_rays, grid_size=grid_size,
-                         strategy=strategy)
-        if dx_um is None:
-            # dx is not stored as an attribute; derive from optiland's formula:
-            # dx = wavelength[µm] * FNO / Q,  Q = grid_size / (num_rays - 1)
-            _fno = fft_psf._get_working_FNO()
-            _Q = fft_psf.grid_size / (fft_psf.num_rays - 1)
-            dx_um = float(fft_psf.wavelengths[0]) * float(_fno) / float(_Q)  # µm
-            if not (0.01 <= dx_um <= 100.0):
-                warnings.warn(
-                    f"PSF pixel pitch dx_um={dx_um:.4f} µm is outside the "
-                    f"expected range [0.01, 100] µm.",
-                    stacklevel=2,
-                )
-        mono = fft_psf.psf.copy()
-        mono_sum = mono.sum()
-        if mono_sum > 0:
-            mono /= mono_sum  # energy normalize: sum = 1
-        psf_accum += g_k[j] * mono
-
-    psf_accum /= psf_accum.sum()
-    return psf_accum, dx_um  # type: ignore[return-value]
-
-
-def _psf_to_esf(
-    psf_2d: np.ndarray,
-    dx_um: float,
-    x_px: float,
-    n_pixels: int = 801,
-) -> np.ndarray:
-    """Convert a 2D PSF to a 1D Edge Spread Function on the sensor pixel grid.
-
-    Returns np.ndarray of shape (n_pixels,), values in [0, 1].
-    """
-    # PSF → LSF
-    lsf = psf_2d.sum(axis=0)
-    lsf /= lsf.sum()
-
-    # LSF → ESF: cumulative sum of the unit-normalized LSF.
-    # This equals ∫_{-∞}^{x} LSF(t) dt, guaranteed to span exactly [0, 1].
-    # fftconvolve(step, lsf, mode='same') clips at ~0.5 when the PSF is very
-    # narrow relative to the grid, so we use cumsum instead.
-    esf_psf_grid = np.cumsum(lsf)
-
-    # Resample to sensor pixel grid
-    n_psf = len(esf_psf_grid)
-    x_psf = (np.arange(n_psf) - n_psf // 2) * dx_um           # µm
-    x_sensor = (np.arange(n_pixels) - n_pixels // 2) * x_px   # µm
-    esf_sensor = np.interp(x_sensor, x_psf, esf_psf_grid)
-
-    return np.clip(esf_sensor, 0.0, 1.0)
-
-
-def compute_cfw_psf(
-    optic,
-    z_defocus_um: float,
-    *,
-    num_rays: int = 128,
-    grid_size: int = 1024,
-    strategy: str = "best_fit_sphere",
-    x_px: float = 4.5,
-    exposure_slope: float = 8.0,
-    display_gamma: float = 2.2,
-    color_diff_threshold: float = 0.2,
-) -> int:
-    """Compute Color Fringe Width using diffraction PSF (ground truth).
-
-    Returns integer pixel count, directly comparable to cfw.fringe_width().
-    """
-    esfs: dict[str, np.ndarray] = {}
-    for c in ("R", "G", "B"):
-        psf_2d, dx_um = compute_polychromatic_psf(
-            optic, c, z_defocus_um, num_rays, grid_size, strategy
-        )
-        esf_raw = _psf_to_esf(psf_2d, dx_um, x_px)
-        esfs[c] = (
-            (np.tanh(exposure_slope * esf_raw) / np.tanh(exposure_slope))
-            ** display_gamma
-        )
-
-    diff_rg = np.abs(esfs["R"] - esfs["G"])
-    diff_rb = np.abs(esfs["R"] - esfs["B"])
-    diff_gb = np.abs(esfs["G"] - esfs["B"])
-    fringed = (
-        (diff_rg > color_diff_threshold)
-        | (diff_rb > color_diff_threshold)
-        | (diff_gb > color_diff_threshold)
-    )
-    return int(fringed.sum())
-
 
 __all__ = [
     "compute_chl_curve",
-    "compute_rori1_chl_curve",
     "compute_rori1_spot_curves",
-    "compute_sa_poly_curves",
-    "compute_w040_curve",
+    "compute_rori4_spot_curves",
     "precompute_ray_fan",
     "compute_polychromatic_esf",
-    "compute_polychromatic_esf_fast",
-    "compute_cfw_psf",
+    "compute_polychromatic_esf_geom",
     "bake_wavelength_esfs",
     "apply_sensor_weights",
 ]
