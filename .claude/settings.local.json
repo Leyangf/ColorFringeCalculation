@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ls c:/ResearchLab/ChromFringe/data/raw/sensor_leicam8*)"
+      "Bash(ls c:/ResearchLab/ChromFringe/data/raw/sensor_leicam8*)",
+      "Bash(python3 -:*)"
     ]
   }
 }

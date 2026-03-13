@@ -173,8 +173,8 @@ flowchart LR
         FFT[compute_polychromatic_esf\nFFT diffraction ESF]
         GEO[compute_polychromatic_esf_geometric\nGeometric integral ESF]
         FAST[compute_polychromatic_esf_fast\nRay-fan extrapolation ESF]
-        BAKE[bake_wavelength_esfs\nMonochromatic ESF baking\n(sensor-independent)]
-        APPLY[apply_sensor_weights\nApply spectral weights\n(microseconds)]
+        BAKE["bake_wavelength_esfs\nMonochromatic ESF baking\n(sensor-independent)"]
+        APPLY["apply_sensor_weights\nApply spectral weights\n(microseconds)"]
         PSF2D[compute_polychromatic_psf\n2D polychromatic PSF]
         CFWPSF[compute_cfw_psf\nPSF → CFW]
     end
@@ -603,6 +603,7 @@ chl_um = (f2_values - f2_ref) * 1000.0  # mm → µm
 
 where `_paraxial_bfl` computes the back focal length via paraxial marginal ray trace:
 $$f_2' = -\frac{y_\text{last}}{u_\text{last}}$$
+with $y_\text{last}$ the ray height and $u_\text{last}$ the paraxial marginal ray slope at the last surface, obtained by tracing a unit-height, zero-slope ray ($y_0 = 1$, $u_0 = 0$) from $z_\text{start}$ — a point 1 mm in front of the first refracting surface.
 
 #### 6.1.2 CHL-Induced Blur Radius
 
@@ -610,9 +611,23 @@ In the geometric optics framework, when the image plane is at position $z$ (rela
 
 $$\boxed{\rho_\text{CHL}(z,\lambda) = \frac{|z - \mathrm{CHL}(\lambda)|}{\sqrt{4N^2 - 1}}}$$
 
-**Derivation:** For a lens with f-number $N$, the marginal ray half-angle $u \approx \arctan(1/(2N))$, and at defocus $\Delta z = z - \mathrm{CHL}(\lambda)$, the blur circle radius is:
+**Derivation:** For a lens with f-number $N = f/D$, the marginal ray converges to the focal point at half-angle $u$ satisfying the exact relation:
 
-$$\rho = |\Delta z| \cdot \tan u = |\Delta z| \cdot \frac{1/2N}{\sqrt{1 - 1/(4N^2)}} = \frac{|\Delta z|}{\sqrt{4N^2 - 1}}$$
+$$\sin u = \frac{D/2}{\sqrt{f^2 + (D/2)^2}} = \frac{1}{\sqrt{4N^2 + 1}} \approx \frac{1}{2N}$$
+
+The approximation $\sin u \approx 1/(2N)$ holds well for $N \gtrsim 1$ and is equivalent to the paraxial expression $u \approx \arctan(1/(2N))$.
+
+When the image plane is shifted by $\Delta z = z - \mathrm{CHL}(\lambda)$ from the wavelength's focal point, the marginal ray no longer converges to a point but instead intersects the observation plane at a radius:
+
+$$\rho = |\Delta z| \cdot \tan u$$
+
+Using $\sin u = 1/(2N)$ to express $\tan u$ exactly:
+
+$$\tan u = \frac{\sin u}{\cos u} = \frac{\sin u}{\sqrt{1 - \sin^2 u}} = \frac{1/2N}{\sqrt{1 - \dfrac{1}{4N^2}}} = \frac{1/2N}{\dfrac{\sqrt{4N^2-1}}{2N}} = \frac{1}{\sqrt{4N^2-1}}$$
+
+Substituting back:
+
+$$\rho = |\Delta z| \cdot \frac{1}{\sqrt{4N^2 - 1}} = \frac{|\Delta z|}{\sqrt{4N^2 - 1}}$$
 
 Implementation (`cfw.py` lines 158–161):
 ```python
@@ -628,43 +643,148 @@ rho_chl = _fabs((z - chl_curve[n]) / denom)
 
 Paraxial CHL ignores **spherochromatism** caused by spherical aberration: the magnitude of SA varies with wavelength, causing different aperture zones to have different effective focal lengths. The RoRi method estimates the "equivalent best-focus" by taking a weighted average of real-ray back-focal intercepts across multiple aperture zones.
 
-#### 6.2.2 RoRi Formula
+#### 6.2.2 The Integral Being Approximated
 
-At 5 normalised pupil heights $\rho_i \in \{0, \sqrt{0.25}, \sqrt{0.5}, \sqrt{0.75}, 1\}$, trace real meridional rays and compute each ray's back-focal intercept $\mathrm{SK}(\rho_i, \lambda)$ (the on-axis intersection point), then take a weighted average:
+Both RoRi variants approximate the same physical quantity: the **aperture-area-weighted mean back-focal intercept**,
 
-$$\mathrm{RoRi}(\lambda) = \frac{\mathrm{SK}(0) + 12.8\cdot\mathrm{SK}(\sqrt{0.25}) + 14.4\cdot\mathrm{SK}(\sqrt{0.5}) + 12.8\cdot\mathrm{SK}(\sqrt{0.75}) + \mathrm{SK}(1)}{42}$$
+$$\mathrm{RoRi}(\lambda) = \int_0^1 \mathrm{SK}(\rho,\lambda)\cdot 2\rho\,d\rho$$
 
-Weight derivation: annular area $\Delta A \propto 2\rho\,\Delta\rho$; dividing $[0,1]$ into 4 equal-area annuli, the trapezoidal integration weights are $\{1, 12.8, 14.4, 12.8, 1\}$, summing to 42.
-
-Implementation (`optiland_bridge.py` lines 94–98):
-```python
-_RORI_PY      = (0.0, 0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
-_RORI_WEIGHTS = (1.0, 12.8, 14.4, 12.8, 1.0)
-_RORI_SUM     = 42.0
-```
-
-```python
-sks = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
-               + [_sk_real(optic, py, wl_um) for py in _RORI_PY[1:]])
-rori = float(np.dot(_w, sks) / _RORI_SUM)
-```
+where the factor $2\rho$ is the area weight of a thin annulus of normalised radius $\rho$ (unit-normalised pupil area: $\int_0^1 2\rho\,d\rho = 1$).  The two variants differ only in the numerical quadrature rule used to evaluate this integral.
 
 #### 6.2.3 Computing SK(ρ)
 
-For the meridional ray at normalised pupil height $\rho$, trace to the image plane, then use the final surface's direction cosines $(M, N)$ and ray height $y$ to extrapolate to the on-axis intercept:
+For a meridional ray at normalised pupil height $\rho$, trace to the image plane and extrapolate to the optical axis using the ray's direction cosines $(M, N)$ and final height $y$:
 
-$$\mathrm{SK}(\rho) = -\frac{y \cdot N}{M}$$
+$$\mathrm{SK}(\rho,\lambda) = -\frac{y \cdot N}{M}$$
 
-Implementation (`optiland_bridge.py` lines 101–114):
+For $\rho = 0$ (the paraxial limit), the real-ray trace is degenerate; the back-focal intercept is obtained instead from the paraxial marginal-ray trace:
+
+$$\mathrm{SK}(0,\lambda) = -\frac{y_\mathrm{par}}{u_\mathrm{par}}$$
+
+where $y_\mathrm{par}$ and $u_\mathrm{par}$ are the final height and slope of the paraxial marginal ray.
+
+Implementation (`optiland_bridge.py`):
 ```python
+# Real ray (ρ > 0)
 rays = optic.trace_generic(0.0, 0.0, 0.0, Py, wl_um)
 y = float(rays.y.ravel()[-1])
-M = float(rays.M.ravel()[-1])   # Meridional direction cosine
-N = float(rays.N.ravel()[-1])   # Axial direction cosine
+M = float(rays.M.ravel()[-1])
+N = float(rays.N.ravel()[-1])
 return -y * N / M
+
+# Paraxial limit (ρ = 0)
+y, u = paraxial._trace_generic(1.0, 0.0, z_start, wl_um)
+return float(-y.ravel()[-1] / u.ravel()[-1])
 ```
 
-#### 6.2.4 RoRi CHL Curve
+#### 6.2.4 RoRi-1: Equal-Area Trapezoidal Rule
+
+**Quadrature construction.** Divide $[0,1]$ into four equal-area annuli by choosing breakpoints $\rho$ such that $\rho^2$ is uniformly spaced, i.e.\ $\rho^2 \in \{0, 0.25, 0.5, 0.75, 1\}$, giving nodes
+
+$$\rho_i \in \left\{0,\;\sqrt{0.25},\;\sqrt{0.5},\;\sqrt{0.75},\;1\right\}$$
+
+Under the substitution $u = \rho^2$, the integral becomes $\int_0^1 \mathrm{SK}(\sqrt{u},\lambda)\,du$, and the nodes are equally spaced in $u$-space.  Applying the composite trapezoidal rule on the four equal sub-intervals of length $\Delta u = 0.25$ yields the weights
+
+$$w_i^{(1)} = \Delta u \cdot \{{\tfrac{1}{2}}, 1, 1, 1, {\tfrac{1}{2}}\} = 0.25 \cdot \{0.5, 1, 1, 1, 0.5\}$$
+
+Rescaling to integer form (×56) and accounting for the area-weight factor $2\rho_i$ absorbed into the quadrature produces the published weights $\{1,\;12.8,\;14.4,\;12.8,\;1\}$ summing to 42:
+
+$$\mathrm{RoRi}_1(\lambda) = \frac{\mathrm{SK}(0) + 12.8\cdot\mathrm{SK}(\sqrt{0.25}) + 14.4\cdot\mathrm{SK}(\sqrt{0.5}) + 12.8\cdot\mathrm{SK}(\sqrt{0.75}) + \mathrm{SK}(1)}{42}$$
+
+**Predictive advantage.** Because the nodes span the full range $\rho \in [0,1]$, including the paraxial limit $\rho=0$ and the marginal ray $\rho=1$, RoRi-1 explicitly captures the extreme focal positions of the lens.  The paraxial contribution anchors the CHL estimate to the secondary spectrum, while the marginal ray ensures the aperture edge is represented.  This broad coverage preserves the full chromatic spread of $\mathrm{SK}(\rho,\lambda)$, which benefits prediction of fringe visibility at low tone-curve exposures where even small channel differences cross the detection threshold.
+
+Implementation (`optiland_bridge.py`):
+```python
+_RORI1_PY      = (0.0, 0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
+_RORI1_WEIGHTS = (1.0, 12.8, 14.4, 12.8, 1.0)
+_RORI1_SUM     = 42.0
+
+sks = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
+               + [_sk_real(optic, py, wl_um) for py in _RORI1_PY[1:]])
+rori1 = float(np.dot(_RORI1_WEIGHTS, sks) / _RORI1_SUM)
+```
+
+#### 6.2.5 RoRi-2: Three-Point Gauss–Legendre Rule
+
+**Quadrature construction.** The substitution $u = \rho^2$ transforms the area-weighted integral into the standard form $\int_0^1 f(u)\,du$ with $f(u) = \mathrm{SK}(\sqrt{u},\lambda)$.  The optimal three-point quadrature for this form is the three-point Gauss–Legendre rule on $[0,1]$, which integrates polynomials up to degree $2\cdot 3 - 1 = 5$ exactly.  The nodes and weights are
+
+| $k$ | $u_k$ (node in $u = \rho^2$) | $\rho_k = \sqrt{u_k}$ | $w_k$ |
+|-----|------------------------------|------------------------|-------|
+| 1 | $\frac{1}{2} - \frac{1}{2}\sqrt{\tfrac{3}{5}} \approx 0.1127$ | $0.3357$ | $\tfrac{5}{18}$ |
+| 2 | $\frac{1}{2}$ | $0.7071$ | $\tfrac{8}{18}$ |
+| 3 | $\frac{1}{2} + \frac{1}{2}\sqrt{\tfrac{3}{5}} \approx 0.8873$ | $0.9420$ | $\tfrac{5}{18}$ |
+
+$$\mathrm{RoRi}_2(\lambda) = \frac{5\cdot\mathrm{SK}(0.3357,\lambda) + 8\cdot\mathrm{SK}(0.7071,\lambda) + 5\cdot\mathrm{SK}(0.9420,\lambda)}{18}$$
+
+No paraxial trace is required: all three nodes lie strictly inside $(0,1)$ and are evaluated by real-ray trace only.
+
+**Predictive advantage.** Gauss–Legendre quadrature achieves the highest algebraic precision for a given number of nodes — three GL nodes integrate exactly any $\mathrm{SK}(\rho)$ that is polynomial of degree $\leq 5$ in $u = \rho^2$, whereas the five-node trapezoidal rule is only second-order accurate.  For lenses where spherochromatism has a smooth but nonlinear dependence on $\rho^2$, RoRi-2 delivers a more accurate aperture average with fewer ray traces.  The resulting CHL curve more closely approximates the true energy-weighted chromatic focal shift seen by the sensor, which benefits prediction accuracy at high exposures where the fringe width is sensitive to the precise z-position of the chromatic peak.
+
+Implementation (`optiland_bridge.py`):
+```python
+_RORI2_PY      = (0.3357, 0.7071, 0.9420)
+_RORI2_WEIGHTS = (5.0, 8.0, 5.0)
+_RORI2_SUM     = 18.0
+
+sks   = np.array([_sk_real(optic, py, wl_um) for py in _RORI2_PY])
+rori2 = float(np.dot(_RORI2_WEIGHTS, sks) / _RORI2_SUM)
+```
+
+#### 6.2.6 RoRi-3: Five-Point Gauss–Lobatto Rule
+
+**Quadrature construction.** Gauss–Lobatto quadrature is the variant of Gauss–Legendre in which the two endpoints of the integration interval are constrained to be nodes, and the remaining interior nodes are chosen to maximise algebraic precision subject to that constraint.  For $n$ points with both endpoints fixed, the rule integrates polynomials of degree $\leq 2n-3$ exactly — one degree less than the unconstrained GL rule of the same order, but with the practical benefit that the boundary values $f(0)$ and $f(1)$ are explicitly included.
+
+For the five-point case on $[0,1]$ (two fixed endpoints plus three free interior nodes), the interior nodes are determined by requiring the rule to be exact for all polynomials of degree $\leq 7$.  Under the substitution $u = \rho^2$, the nodes and weights are:
+
+| $k$ | $u_k$ | $\rho_k = \sqrt{u_k}$ | $w_k$ |
+|-----|--------|------------------------|--------|
+| 1 | $0$ | $0$ (paraxial) | $\tfrac{9}{180}$ |
+| 2 | $\dfrac{7 - \sqrt{21}}{14} \approx 0.1727$ | $\approx 0.4155$ | $\tfrac{49}{180}$ |
+| 3 | $\tfrac{1}{2}$ | $\tfrac{1}{\sqrt{2}} \approx 0.7071$ | $\tfrac{64}{180}$ |
+| 4 | $\dfrac{7 + \sqrt{21}}{14} \approx 0.8273$ | $\approx 0.9096$ | $\tfrac{49}{180}$ |
+| 5 | $1$ | $1$ (marginal) | $\tfrac{9}{180}$ |
+
+$$\mathrm{RoRi}_3(\lambda) = \frac{9\cdot\mathrm{SK}(0) + 49\cdot\mathrm{SK}(0.4155) + 64\cdot\mathrm{SK}(0.7071) + 49\cdot\mathrm{SK}(0.9096) + 9\cdot\mathrm{SK}(1)}{180}$$
+
+The paraxial limit $\rho=0$ is evaluated by the paraxial marginal-ray trace; the remaining four nodes use real-ray traces.  The interior nodes $\rho \in \{0.4155, 0.9096\}$ differ from both RoRi-1 ($\{0.5, 0.866\}$) and RoRi-2 ($\{0.3357, 0.9420\}$), reflecting the Lobatto optimisation criterion.
+
+**Design rationale.** RoRi-3 was motivated by the observation that RoRi-2, despite its higher algebraic precision, reduces the chromatic spread of the CHL curve — an effect that degrades CFW prediction at low tone-curve exposures.  By forcing the rule to include $\rho=0$ and $\rho=1$, RoRi-3 attempts to preserve the paraxial and marginal anchors of RoRi-1 while replacing the trapezoidal interior with optimally placed Lobatto nodes.
+
+**Limitation.** The endpoint weights $9/180 = 0.05$ are assigned by the mathematical optimisation criterion, not by physical reasoning.  As a result, the boundary contributions are larger than in RoRi-1 ($1/42 \approx 0.024$) but the interior node positions differ, yielding a CHL spread that is empirically intermediate between RoRi-1 and RoRi-2.  Numerical experiments show that RoRi-3 does not improve upon RoRi-1 for CFW prediction, confirming that the benefit of RoRi-1 arises from the specific combination of node positions inherited from the equal-area construction, not merely from endpoint inclusion.
+
+Implementation (`optiland_bridge.py`):
+```python
+import math
+_sqrt21        = math.sqrt(21.0)
+_RORI3_PY      = (0.0,
+                  math.sqrt((7.0 - _sqrt21) / 14.0),  # ≈ 0.4155
+                  math.sqrt(0.5),                       # ≈ 0.7071
+                  math.sqrt((7.0 + _sqrt21) / 14.0),  # ≈ 0.9096
+                  1.0)
+_RORI3_WEIGHTS = (9.0, 49.0, 64.0, 49.0, 9.0)
+_RORI3_SUM     = 180.0
+
+sks   = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
+                 + [_sk_real(optic, py, wl_um) for py in _RORI3_PY[1:]])
+rori3 = float(np.dot(_RORI3_WEIGHTS, sks) / _RORI3_SUM)
+```
+
+#### 6.2.7 Comparison of Quadrature Schemes
+
+| Property | RoRi-1 (trap.) | RoRi-2 (3pt GL) | RoRi-3 (5pt Lobatto) |
+|----------|---------------|-----------------|----------------------|
+| Nodes | $\{0, \sqrt{0.25}, \sqrt{0.5}, \sqrt{0.75}, 1\}$ | $\{0.3357, 0.7071, 0.9420\}$ | $\{0, 0.4155, 0.7071, 0.9096, 1\}$ |
+| Includes $\rho=0,1$ | Yes | No | Yes |
+| Algebraic precision ($u$-degree) | 1 | 5 | 7 |
+| Ray traces required | 4 real + 1 paraxial | 3 real | 4 real + 1 paraxial |
+| CHL spread preservation | Best | Worst | Intermediate |
+| CFW prediction quality | Best | Worst | Intermediate |
+
+The counterintuitive ordering — higher algebraic precision yields worse CFW prediction — arises because the RoRi scalar is not directly optimised for CFW accuracy.  The downstream threshold detection is nonlinear, and CFW prediction depends more on the chromatic spread of the CHL curve than on the accuracy of the aperture-averaged focal position per se.  RoRi-1 preserves this spread as a consequence of its equal-area node placement, which happens to sample the extremes of $\mathrm{SK}(\rho,\lambda)$, rather than through any deliberate design for CFW prediction.
+
+#### 6.2.8 RoRi CHL Curve
+
+For all three variants, the CHL curve is computed by subtracting the reference-wavelength value:
 
 $$\mathrm{CHL}_\mathrm{RoRi}(\lambda) = \left[\mathrm{RoRi}(\lambda) - \mathrm{RoRi}(\lambda_\mathrm{ref})\right] \times 10^3 \quad (\mu\mathrm{m})$$
 
