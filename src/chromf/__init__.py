@@ -7,7 +7,8 @@ Core CFW functions (from cfw.py):
 
     fringe_width            Total colour fringe width in µm at a given defocus
     edge_response           Single-channel ESF value at (x, z)
-    edge_rgb_response       R, G, B ESF tuple at (x, z)
+    edge_rgb_response       R, G, B ESF tuple at (x, z)  [scalar x]
+    edge_rgb_response_vec   R, G, B ESF arrays at (x_arr, z)  [vectorised]
     detect_fringe_binary    1 if pixel is colour-fringed, else 0
 
 Spectral data (from spectrum_loader.py):
@@ -38,6 +39,7 @@ from chromf.cfw import (
     fringe_width,
     edge_response,
     edge_rgb_response,
+    edge_rgb_response_vec,
     detect_fringe_binary,
     load_sensor_response,
 )
@@ -64,6 +66,7 @@ __all__ = [
     "fringe_width",
     "edge_response",
     "edge_rgb_response",
+    "edge_rgb_response_vec",
     "detect_fringe_binary",
     "load_sensor_response",
     # spectrum_loader
