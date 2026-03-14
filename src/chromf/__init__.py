@@ -23,8 +23,7 @@ Sensor selection (from cfw.py):
 Aberration extraction from Optiland (from optiland_bridge.py):
 
     compute_chl_curve            Paraxial CHL [λ, µm]
-    compute_rori1_spot_curves    RoRi-1 CHL + residual SA spot radius (ρ_SA)
-    compute_rori4_spot_curves    RoRi-4 CHL + residual SA spot radius (ρ_SA)
+    compute_rori_spot_curves     RoRi CHL + residual SA spot radius (ρ_SA)
     precompute_ray_fan          Pre-trace ray fan for fast ESF sweeps
     compute_polychromatic_esf               Diffraction ESF (ground truth)
     compute_polychromatic_esf_geom          Geometric ESF via pre-traced ray fan
@@ -46,8 +45,7 @@ from chromf.spectrum_loader import channel_products
 
 from chromf.optiland_bridge import (
     compute_chl_curve,
-    compute_rori1_spot_curves,
-    compute_rori4_spot_curves,
+    compute_rori_spot_curves,
     precompute_ray_fan,
     compute_polychromatic_esf,
     compute_polychromatic_esf_geom,
@@ -68,8 +66,7 @@ __all__ = [
     "channel_products",
     # optiland_bridge
     "compute_chl_curve",
-    "compute_rori1_spot_curves",
-    "compute_rori4_spot_curves",
+    "compute_rori_spot_curves",
     "precompute_ray_fan",
     "compute_polychromatic_esf",
     "compute_polychromatic_esf_geom",

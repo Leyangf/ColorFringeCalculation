@@ -2,13 +2,13 @@
 title: "Numerical Modelling of Chromatic Colour Fringing in Photographic Lenses"
 subtitle: A Multi-Fidelity Approach from Analytic ESF Models to FFT Diffraction
 author: ChromFringe Research
-date: 2026-03-11
+date: 2026-03-14
 tags: [optics, chromatic-aberration, PSF, ESF, colour-fringe, research]
 ---
 
 # Numerical Modelling of Chromatic Colour Fringing in Photographic Lenses
 
-> **Abstract.** We present a multi-fidelity numerical framework for predicting and quantifying chromatic colour fringes produced by residual longitudinal chromatic aberration (CHL) and spherical aberration (SA) in photographic lenses. The framework spans four modelling tiers — from sub-microsecond analytic edge-spread-function (ESF) kernels to full FFT Fraunhofer diffraction — unified under a single metric: **Colour Fringe Width (CFW)**. We validate the models against a Nikon AI Nikkor 85 mm f/2S lens prescription and demonstrate that the proposed Multi-Zone Defocus (MZD) analytic model captures pupil-resolved SA effects with accuracy comparable to geometric ray-fan integration, at three orders of magnitude lower computational cost.
+> **Abstract.** We present a multi-fidelity numerical framework for predicting and quantifying chromatic colour fringes produced by residual longitudinal chromatic aberration (CHL) and spherical aberration (SA) in photographic lenses. The framework spans three modelling tiers — from sub-microsecond analytic edge-spread-function (ESF) kernels through ray-fan geometric extrapolation to full FFT Fraunhofer diffraction — unified under a single metric: **Colour Fringe Width (CFW)**. A key contribution is the **ray-fan linear extrapolation** technique, which pre-traces rays once and extrapolates to arbitrary defocus positions, achieving geometric-optics accuracy at ~1000× speedup over FFT diffraction. We validate the models against a Nikon AI Nikkor 85 mm f/2S lens at f/2.
 
 ---
 
@@ -29,10 +29,9 @@ tags: [optics, chromatic-aberration, PSF, ESF, colour-fringe, research]
   - [[#4.1 Overview]]
   - [[#4.2 Pillbox ESF (Geometric Uniform Disc)]]
   - [[#4.3 Gaussian ESF]]
-  - [[#4.4 Multi-Zone Defocus (MZD) ESF]]
-  - [[#4.5 Geometric Pupil Integral]]
-  - [[#4.6 Ray-Fan Linear Extrapolation]]
-  - [[#4.7 FFT Fraunhofer Diffraction PSF]]
+  - [[#4.4 Geometric Pupil Integral]]
+  - [[#4.5 Ray-Fan Linear Extrapolation]]
+  - [[#4.6 FFT Fraunhofer Diffraction PSF]]
 - [[#5. Polychromatic ESF and Tone Mapping]]
   - [[#5.1 Spectral Integration]]
   - [[#5.2 Energy Normalisation]]
@@ -61,9 +60,9 @@ Despite the practical importance of this effect, quantitative prediction of colo
 This work introduces a **multi-fidelity modelling framework** that:
 
 1. Extracts aberration data (CHL, SA, spherochromatism) from a lens prescription via ray tracing.
-2. Provides four levels of ESF computation spanning five orders of magnitude in speed.
+2. Provides three levels of ESF computation spanning five orders of magnitude in speed.
 3. Defines a perceptually motivated metric — **Colour Fringe Width (CFW)** — that quantifies fringe visibility in micrometres.
-4. Introduces a **Multi-Zone Defocus (MZD)** analytic model that resolves pupil-dependent SA without full pupil integration.
+4. Introduces a **ray-fan linear extrapolation** technique that pre-traces rays once and evaluates arbitrary defocus positions via array arithmetic, achieving geometrically exact accuracy at ~1000× speedup over FFT diffraction.
 
 The framework is validated against a Nikon AI Nikkor 85 mm f/2S lens at f/2, using FFT diffraction PSF as the ground truth.
 
@@ -133,7 +132,7 @@ $$\mathrm{CHL}_\mathrm{RoRi}(\lambda) = \left[\mathrm{RoRi}(\lambda) - \mathrm{R
 
 Even at the RoRi best-focus plane, different aperture zones produce laterally displaced ray intercepts. The **RMS residual spot radius** quantifies this:
 
-$$y_\text{spot}(\rho_i, \lambda) = \frac{[\mathrm{SK}(\rho_i, \lambda) - \mathrm{RoRi}(\lambda)] \cdot \rho_i}{2N}$$
+$$y_\text{spot}(\rho_i, \lambda) = \frac{[\mathrm{SK}(\rho_i, \lambda) - \mathrm{RoRi}(\lambda)] \cdot \rho_i}{\sqrt{4N^2 - 1}} \times 10^3 \quad (\mu\mathrm{m})$$
 
 $$\boxed{\rho_\text{sa}(\lambda) = \sqrt{\frac{\sum_i w_i \cdot y_\text{spot}^2(\rho_i, \lambda)}{\sum_i w_i}}}$$
 
@@ -145,7 +144,7 @@ A single scalar $\rho_{sa}$ does not capture the pupil profile of SA. We fit the
 
 $$\mathrm{TA}_\text{SA}(\rho, \lambda) \approx c_3(\lambda) \cdot \rho^3 + c_5(\lambda) \cdot \rho^5$$
 
-using least-squares regression on the four non-trivial RoRi pupil heights. The coefficients $c_3$ and $c_5$ capture primary (3rd-order) and secondary (5th-order) spherical aberration respectively, providing a wavelength-dependent pupil profile for use in the MZD model.
+using least-squares regression on the four non-trivial RoRi pupil heights. The coefficients $c_3$ and $c_5$ capture primary (3rd-order) and secondary (5th-order) spherical aberration respectively, providing a wavelength-dependent pupil profile that characterises spherochromatism.
 
 ### 3.5 Seidel W040 Coefficient
 
@@ -165,14 +164,13 @@ This connects the ray-trace data to the wave-optics description used in diffract
 
 ### 4.1 Overview
 
-We provide four tiers of ESF models, spanning five orders of magnitude in computation time:
+We provide three tiers of ESF models, spanning five orders of magnitude in computation time:
 
 | Level | Method | Speed | Physical Content |
 |-------|--------|-------|-----------------|
 | 0 | FFT Fraunhofer diffraction | ~1 s/ESF | Full wave optics |
-| 1 | Geometric pupil integral (Gauss-Legendre) | ~10 ms/ESF | Exact geometric optics |
-| 2 | Ray-fan linear extrapolation | <1 ms/ESF | Pre-traced rays, linear defocus |
-| 3 | Analytic ESF (Pillbox / Gaussian / MZD) | <0.01 ms/ESF | Parametric pupil model |
+| 1 | Ray-fan linear extrapolation | <1 ms/ESF | Pre-traced rays, linear defocus |
+| 2 | Analytic ESF (Pillbox / Gaussian) | <0.01 ms/ESF | Parametric blur model |
 
 All models share the same aberration inputs and spectral integration pipeline, enabling direct comparison.
 
@@ -200,35 +198,7 @@ $$\boxed{\mathrm{ESF}_\text{gauss}(x, \rho) = \frac{1}{2}\left[1 + \mathrm{erf}\
 
 The soft tails provide a smoother transition that better approximates diffraction effects, producing moderately larger CFW than the Pillbox model.
 
-### 4.4 Multi-Zone Defocus (MZD) ESF
-
-The MZD model is the key contribution of this work. Rather than collapsing SA into a single scalar, it **resolves the pupil-dependent blur** by integrating over Gauss-Legendre quadrature nodes.
-
-For each wavelength $\lambda$ and pupil node $\rho_k$, the blur radius is:
-
-$$\rho_\text{CHL} = \frac{|z - \mathrm{CHL}(\lambda)|}{\sqrt{4N^2 - 1}}$$
-
-$$\mathrm{TA}_\text{SA}(\rho_k) = \rho_k^3 \cdot 2 \cdot \rho_\text{sa}(\lambda)$$
-
-$$R_k = \sqrt{(\rho_k \cdot \rho_\text{CHL})^2 + \mathrm{TA}_\text{SA}^2}$$
-
-The factor of 2 converts the RMS SA to an approximate marginal value. Each pupil ring contributes an **arcsin ring ESF** — the exact geometric result for a thin annulus of radius $R$:
-
-$$\mathrm{ESF}_\text{ring}(x;\,R) = \frac{\arcsin\!\left(\mathrm{clip}\!\left(\frac{x}{R},\,-1,\,1\right)\right)}{\pi} + \frac{1}{2}$$
-
-The full MZD ESF integrates over the pupil with area weights:
-
-$$\boxed{\mathrm{ESF}_\text{MZD}(x;\,z,\lambda) = \sum_k \rho_k \cdot W_k \cdot \mathrm{ESF}_\text{ring}(x;\,R_k)}$$
-
-where $\rho_k$ and $W_k$ are Gauss-Legendre nodes and weights on $[0, 1]$.
-
-**Advantages over the former Double-Gaussian model:**
-- No need to compute pupil zone boundaries ($\rho_s$) or zone RMS values analytically.
-- Uses the same arcsin ring ESF as the geometric pupil integral, ensuring consistent physics.
-- Naturally handles arbitrary SA profiles (including higher-order terms) without reformulation.
-- Retains sub-microsecond evaluation via JIT compilation.
-
-### 4.5 Geometric Pupil Integral
+### 4.4 Geometric Pupil Integral
 
 For each wavelength, trace real rays at $K$ Gauss-Legendre nodes across the pupil and compute the lateral displacement $R(\rho_k)$ at the defocused image plane. The ESF is:
 
@@ -240,7 +210,7 @@ $$\mathrm{ESF}(x) \approx \sum_k \rho_k \cdot W_k \cdot \mathrm{ESF}_\text{ring}
 
 With 32 Gauss-Legendre nodes, ESF accuracy is better than 0.1% for smooth aberration profiles. This is the highest-fidelity geometric method, but requires real ray tracing at every defocus position.
 
-### 4.6 Ray-Fan Linear Extrapolation
+### 4.5 Ray-Fan Linear Extrapolation
 
 Pre-trace all rays at $z = 0$, recording transverse aberration $\mathrm{TA}_0(\rho, \lambda)$ and direction cosine ratio $m(\rho, \lambda) = M / N_\text{dir}$. For any defocus $z$:
 
@@ -248,7 +218,7 @@ $$\boxed{R(\rho;\,z,\lambda) = \left|\mathrm{TA}_0(\rho,\lambda) + m(\rho,\lambd
 
 This linear extrapolation has error $O((z/f')^2)$, which for an 85 mm lens at $z \leq 800$ µm is less than 0.01%. The one-time cost is 32 × 31 = 992 ray traces; subsequent defocus evaluations require only array arithmetic.
 
-### 4.7 FFT Fraunhofer Diffraction PSF
+### 4.6 FFT Fraunhofer Diffraction PSF
 
 The ground-truth model computes the PSF as the squared modulus of the Fourier transform of the complex pupil function:
 
@@ -300,7 +270,7 @@ The raw ESF is passed through a tone-mapping pipeline modelling camera/display n
 
 $$\boxed{I_c(x, z) = \left[\frac{\tanh(\alpha \cdot \mathrm{ESF}_c)}{\tanh(\alpha)}\right]^\gamma}$$
 
-where $\alpha$ is the exposure slope (default 8.0) and $\gamma$ is the display gamma (default 2.2, sRGB). The $\tanh$ curve satisfies $T(0) = 0$, $T(1) = 1$, with enhanced slope near zero that simulates contrast amplification.
+where $\alpha$ is the exposure slope (default 8.0) and $\gamma$ is the display gamma (default 1.8). The $\tanh$ curve satisfies $T(0) = 0$, $T(1) = 1$, with enhanced slope near zero that simulates contrast amplification.
 
 Tone mapping is critical to fringe prediction: it amplifies small inter-channel ESF differences near the edge transition into visible colour shifts.
 
@@ -308,22 +278,31 @@ Tone mapping is critical to fringe prediction: it amplifies small inter-channel 
 
 ## 6. Colour Fringe Width (CFW) Metric
 
-### 6.1 Definition
+### 6.1 Fringe Pixel Classification
 
-The **Colour Fringe Width** is defined as the total spatial extent (in µm) over which the tone-mapped R, G, B channel values differ by more than a visibility threshold $\delta$:
+A pixel at position $x$ is classified as exhibiting a **visible colour fringe** if and only if all three of the following conditions are satisfied simultaneously:
 
-$$\boxed{\mathrm{CFW}(z) = \sum_{x} \mathbf{1}\!\left[\max\!\left(|I_R - I_G|,\;|I_R - I_B|,\;|I_G - I_B|\right) > \delta\right]}$$
+**C1 (lower brightness threshold):** The tone-mapped intensity of every channel exceeds $\delta_\text{low}$, excluding near-black pixels where colour differences are imperceptible:
 
-with $\delta \approx 0.15$–$0.20$ (perceptual visibility threshold) and the scan window $x \in [-400, +400]$ µm at 1 µm steps.
+$$\min(I_R,\; I_G,\; I_B) > \delta_\text{low}$$
 
-### 6.2 Detection Algorithm
+**C2 (inter-channel difference threshold):** At least one pairwise channel difference exceeds $\delta$, indicating a visible colour shift:
 
-For each pixel position $x$:
+$$\max\!\left(|I_R - I_G|,\;|I_R - I_B|,\;|I_G - I_B|\right) > \delta$$
 
-1. Compute $I_R(x, z)$, $I_G(x, z)$, $I_B(x, z)$ via the tone-mapped ESF pipeline.
-2. Evaluate $\max(|I_R - I_G|, |I_R - I_B|, |I_G - I_B|)$.
-3. If the maximum exceeds $\delta$, mark as a fringe pixel.
-4. CFW is the total count of fringe pixels.
+**C3 (upper brightness threshold):** At least one channel is below $\delta_\text{high}$, excluding near-white / saturated pixels where all channels converge:
+
+$$\min(I_R,\; I_G,\; I_B) < \delta_\text{high}$$
+
+Default thresholds: $\delta_\text{low} = 0.15$, $\delta = 0.15$, $\delta_\text{high} = 0.80$.
+
+### 6.2 CFW Definition
+
+The **Colour Fringe Width** is defined as the spatial extent (in µm) of the contiguous region in which all three conditions (C1–C3) are simultaneously fulfilled:
+
+$$\boxed{\mathrm{CFW}(z) = x_\text{last} - x_\text{first} + 1}$$
+
+where $x_\text{first}$ and $x_\text{last}$ are the first and last fringe-classified pixel positions within the scan window $x \in [-400, +400]$ µm at 1 µm steps (outer-boundary method).
 
 The metric is sensitive to:
 - **Defocus $z$:** CFW varies with image plane position; peak CFW occurs near (but not at) the nominal focal plane.
@@ -342,7 +321,7 @@ Compute monochromatic ESFs via FFT for each defocus position $z$ and wavelength 
 **Stage 2 — Sensor Weight Application:**
 Apply the spectral weighting $\hat{w}_c(\lambda_j)$ for each channel and camera model via a simple weighted sum. This is a pure linear operation requiring microseconds.
 
-**Performance gain:** For 25 defocus steps × 3 channels × 2 camera models (150 polychromatic ESFs), the two-stage approach requires 25 × 11 = 275 FFT evaluations plus 150 weighted sums. The naive single-step approach would require 150 × 11 = 1,650 FFTs — a **6× speedup** (3× for a single camera).
+**Performance gain:** For 29 defocus steps × 3 channels × 2 camera models (174 polychromatic ESFs), the two-stage approach requires 29 × 11 = 319 FFT evaluations plus 174 weighted sums. The naive single-step approach would require 174 × 11 = 1,914 FFTs — a **6× speedup** (3× for a single camera).
 
 When switching camera models, only Stage 2 is re-run, enabling rapid sensor comparison without re-computing any FFTs.
 
@@ -374,7 +353,7 @@ Aberration curves were extracted over 31 wavelengths (400–700 nm, 10 nm step):
 | $c_5(\lambda)$ | −101.7 – −57.7 µm | Secondary SA polynomial coefficient |
 | $W_{040}(\lambda)$ | 1.871 – 3.141 µm OPD | Seidel SA wavefront coefficient |
 
-The substantial variation of $c_3$ and $c_5$ with wavelength confirms the presence of spherochromatism and motivates the wavelength-dependent SA modelling in the MZD approach.
+The substantial variation of $c_3$ and $c_5$ with wavelength confirms the presence of spherochromatism and motivates the wavelength-dependent SA modelling in the ray-fan approach.
 
 ### 8.3 ESF Transition Width Results
 
@@ -420,10 +399,9 @@ Controlled-variable experiments reveal the following patterns:
 |-------|-------------------|
 | Pillbox | Sharpest cutoff, lowest CFW (conservative) |
 | Gaussian | Softer tails, moderate CFW |
-| MZD | Pupil-resolved SA, captures asymmetric PSF structure |
-| Ray-fan (geometric) | Ground truth for geometric optics, no PSF assumption |
+| Ray-fan (geometric) | Ground truth for geometric optics, pupil-resolved SA |
 
-The MZD model closely tracks the ray-fan ground truth while maintaining analytic-kernel speed, validating its design as a practical replacement for both the Pillbox and Gaussian models when SA is significant.
+The ray-fan model captures the full pupil-dependent SA structure without any parametric approximation, while maintaining sub-millisecond evaluation speed via pre-traced linear extrapolation.
 
 ---
 
@@ -432,16 +410,15 @@ The MZD model closely tracks the ray-fan ground truth while maintaining analytic
 | Method | Typical Speed | Relative Speedup | Applicable Scenario |
 |--------|--------------|-------------------|-------------------|
 | FFT diffraction PSF | ~1 s / ESF | 1× | Ground truth, final validation |
-| Geometric pupil integral | ~10 ms / ESF | ~100× | Accurate geometric reference |
 | Ray-fan extrapolation | ~0.1–1 ms / ESF | ~1,000× | Interactive z-sweeps, parameter studies |
-| Analytic ESF (Pillbox/Gauss/MZD) | <0.01 ms / ESF | ~100,000× | Real-time exploration, optimisation |
+| Analytic ESF (Pillbox/Gaussian) | <0.01 ms / ESF | ~100,000× | Real-time exploration, optimisation |
 
 **Memory footprint:**
 
 | Data Structure | Size |
 |---------------|------|
-| Monochromatic ESF cache (25 z × 11 wl × 801 pts) | ~1.7 MB |
-| Polychromatic ESF cache (25 z × 3 ch × 801 pts) | ~469 KB |
+| Monochromatic ESF cache (29 z × 11 wl × 801 pts) | ~2.0 MB |
+| Polychromatic ESF cache (29 z × 3 ch × 801 pts) | ~544 KB |
 | Pre-traced ray fan (32 ρ × 31 wl) | ~16 KB |
 | Sensor spectral weights (3 × 31) | < 1 KB |
 
@@ -455,9 +432,9 @@ We have presented a multi-fidelity framework for predicting chromatic colour fri
 
 1. **Colour Fringe Width (CFW) metric** — a quantitative, perceptually grounded measure of fringe visibility that accounts for spectral weighting, tone mapping, and display gamma.
 
-2. **Multi-Zone Defocus (MZD) model** — an analytic ESF kernel that resolves pupil-dependent spherical aberration via Gauss-Legendre integration of arcsin ring ESFs. MZD matches the geometric ray-fan ground truth at five orders of magnitude lower cost than FFT diffraction.
+2. **Ray-fan linear extrapolation** — a pre-traced ray-fan technique that records transverse aberration and ray slope at a single reference plane, then extrapolates to arbitrary defocus positions via array arithmetic. This achieves geometrically exact pupil-resolved ESFs at ~1000× speedup over FFT diffraction, without any parametric approximation of the SA profile.
 
-3. **RoRi aberration extraction with SA polynomial fitting** — providing wavelength-dependent $c_3(\lambda)$ and $c_5(\lambda)$ coefficients that capture both primary and secondary spherical aberration without full pupil integration.
+3. **RoRi aberration extraction with SA polynomial fitting** — providing wavelength-dependent $c_3(\lambda)$ and $c_5(\lambda)$ coefficients that capture both primary and secondary spherical aberration, characterising the spherochromatism of fast lenses.
 
 4. **Two-stage PSF baking** — decoupling sensor-independent monochromatic ESF computation from sensor-specific weighting, enabling rapid camera model comparison without re-running FFTs.
 
@@ -480,15 +457,16 @@ The framework enables lens designers to rapidly evaluate colour fringe performan
 | W040 coefficient | $W_{040} = -\mathrm{TA}_\text{marginal} / (8N)$ µm OPD |
 | Pillbox ESF | $\frac{1}{2}(1 + x/\rho)$, linear on $[-\rho, \rho]$ |
 | Gaussian ESF | $\frac{1}{2}[1 + \mathrm{erf}(x / (\sqrt{2} \cdot 0.5\rho))]$ |
-| MZD ring ESF | $\arcsin(\mathrm{clip}(x/R, -1, 1))/\pi + 1/2$ |
-| MZD blur radius | $R_k = \sqrt{(\rho_k \, \rho_\text{CHL})^2 + (2 \rho_k^3 \, \rho_{sa})^2}$ |
 | Geometric integral | $\int_0^1 [\arcsin(x/R(\rho))/\pi + 1/2] \; 2\rho \, d\rho$ |
 | Ray-fan extrapolation | $R(\rho; z, \lambda) = \|\mathrm{TA}_0 + m \cdot z\|$ |
 | FFT pixel pitch | $dx = \lambda N / Q$, where $Q = \text{grid size} / (\text{num rays} - 1)$ |
 | Spectral integration | $\mathrm{ESF}_c = \sum_j \hat{w}_j \cdot \mathrm{ESF}_\text{mono}(x; z, \lambda_j)$ |
 | Tone mapping | $I = (\tanh(\alpha \cdot \mathrm{ESF}) / \tanh(\alpha))^\gamma$ |
-| CFW definition | $\mathrm{CFW}(z) = \sum_x \mathbf{1}[\max(\|R-G\|, \|R-B\|, \|G-B\|) > \delta]$ |
+| C1 (lower brightness) | $\min(I_R, I_G, I_B) > \delta_\text{low}$ |
+| C2 (inter-channel diff) | $\max(\|I_R-I_G\|, \|I_R-I_B\|, \|I_G-I_B\|) > \delta$ |
+| C3 (upper brightness) | $\min(I_R, I_G, I_B) < \delta_\text{high}$ |
+| CFW definition | $\mathrm{CFW}(z) = x_\text{last} - x_\text{first} + 1$, where C1 $\wedge$ C2 $\wedge$ C3 hold |
 
 ---
 
-*Report based on the ChromFringe framework (2026-03-11).*
+*Report based on the ChromFringe framework (2026-03-14).*

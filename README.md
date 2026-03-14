@@ -22,7 +22,7 @@ ChromFringe/
 │   ├── cfw_geom_demo.ipynb     ← Primary notebook: geometric / analytic PSF models
 │   └── cfw_fftpsf_demo.ipynb   ← Validation notebook: FFT diffraction ground truth
 └── src/chromf/
-    ├── __init__.py             ← Public API (re-exports 18 functions)
+    ├── __init__.py             ← Public API (re-exports 15 functions)
     ├── cfw.py                  ← Core CFW kernels (Numba JIT)
     ├── spectrum_loader.py      ← Spectral data loading & normalisation
     └── optiland_bridge.py      ← Aberration extraction from Optiland lens models
@@ -56,7 +56,7 @@ import chromf
 
 # Load a lens and extract aberration curves
 lens = fileio.load_zemax_file("data/lens/NikonAINikkor85mmf2S.zmx")
-chl_curve, spot_curve = chromf.compute_rori1_spot_curves(lens)
+chl_curve, spot_curve = chromf.compute_rori_spot_curves(lens)
 
 # Compute CFW at 200 µm defocus
 cfw = chromf.fringe_width(
@@ -75,17 +75,17 @@ print(f"CFW = {cfw} µm")
 
 The primary research notebook. Loads a lens, extracts aberration curves, and provides:
 
-1. **Diagnostic plots** — illuminant & sensor spectral responses, CHL curves (paraxial / RoRi-1 / RoRi-4), and per-pupil SA profile comparison (scalar ρ³ model vs polynomial fit vs ray-fan ground truth).
+1. **Diagnostic plots** — illuminant & sensor spectral responses, CHL curves (paraxial / RoRi), aberration budget (SA vs CHL blur radius), and per-pupil SA profile comparison (scalar ρ³ model vs polynomial fit vs ray-fan ground truth).
 2. **Interactive viewer** — real-time R/G/B ESF and pseudo-density fringe map with sliders for defocus, exposure, gamma, PSF model, CHL curve, and SA toggle.
 3. **Static comparisons** — controlled-variable experiments:
-   - **5a:** 2×2 factorial — CHL model (Paraxial / RoRi-1) × PSF shape (Disc / Gaussian), no SA.
-   - **5b:** Orthogonality test — RoRi-1 vs RoRi-4 with SA enabled.
+   - **5a:** 2×2 factorial — CHL model (Paraxial / RoRi) × PSF shape (Disc / Gaussian), no SA.
+   - **5b:** SA effect — Disc + RoRi + SA vs Gaussian + RoRi + SA.
    - **5c:** Geom Fast node count convergence (5 / 16 / 32 GL nodes).
+4. **Per-defocus ESF diagnostic** — detailed 3-column visualization (raw ESF, tone-mapped ESF, pseudo-density fringe map) at each defocus position using Geom Fast 16-node model.
 
 Aberration curves extracted per wavelength:
 - Paraxial CHL (secondary spectrum from marginal-ray trace)
-- RoRi-1 CHL (energy-weighted best focus, includes spherochromatism)
-- RoRi-4 CHL (ρ²-weighted, orthogonal decomposition)
+- RoRi CHL (energy-weighted best focus, includes spherochromatism)
 - Residual SA spot radius ρ_SA(λ)
 
 **PSF models:** Disc (pillbox) · Gaussian · Geometric Fast (ray-fan with Gauss-Legendre pupil integration).
@@ -108,17 +108,17 @@ Numba JIT-compiled inner loops for CFW computation.
 
 | Function | Description |
 |---|---|
-| `edge_response(channel, x_px, z_um, ...)` | Single-channel ESF value at pixel x, defocus z |
-| `edge_rgb_response(x_px, z_um, ...)` | R, G, B ESF tuple (scalar x) |
+| `edge_response(channel, x_um, z_um, ...)` | Single-channel ESF value at position x (µm), defocus z |
+| `edge_rgb_response(x_um, z_um, ...)` | R, G, B ESF tuple (scalar x) |
 | `edge_rgb_response_vec(x_arr, z_um, ...)` | R, G, B ESF arrays (vectorised) |
-| `detect_fringe_binary(x_px, z_um, ...)` | 1 if pixel is colour-fringed, else 0 |
-| `is_fringe_mask(R, G, B, ...)` | Boolean mask of visible fringe pixels |
+| `detect_fringe_binary(x_um, z_um, ...)` | 1 if pixel is colour-fringed, else 0 |
+| `is_fringe_mask(r, g, b, ...)` | Boolean mask of visible fringe pixels |
 | `fringe_width(z_um, ...)` | Total CFW in µm at the given defocus |
 | `load_sensor_response(model)` | Build R/G/B spectral-weight dict for a camera model |
 
 All functions accept `chl_curve_um`, `rho_sa_um`, `f_number`, `psf_mode`, `exposure_slope`, `gamma`, and `sensor_response` as keyword arguments.
 
-**PSF modes:** `"disc"` (Pillbox), `"gauss"` (Gaussian).
+**PSF modes (analytic):** `"disc"` (Pillbox), `"gauss"` (Gaussian). For ray-fan based geometric ESF, use `compute_polychromatic_esf_geom` in `optiland_bridge.py`.
 
 ### `spectrum_loader.py` — Spectral Data
 
@@ -135,8 +135,7 @@ Extracts aberration data from an Optiland `Optic` object and computes ESFs at mu
 | Function | Output |
 |---|---|
 | `compute_chl_curve` | Paraxial CHL [λ, µm] |
-| `compute_rori1_spot_curves` | RoRi-1 CHL + residual SA spot radius (energy-weighted) |
-| `compute_rori4_spot_curves` | RoRi-4 CHL + residual SA spot radius (ρ²-weighted) |
+| `compute_rori_spot_curves` | RoRi CHL + residual SA spot radius (energy-weighted) |
 | `precompute_ray_fan` | Pre-traced ray fan for fast z-extrapolation |
 | `compute_polychromatic_esf` | FFT diffraction ESF (ground truth, ~1 s/ESF) |
 | `compute_polychromatic_esf_geom` | Geometric ESF via pre-traced ray fan (~1000× faster) |
@@ -145,9 +144,17 @@ Extracts aberration data from an Optiland `Optic` object and computes ESFs at mu
 
 ## Key Concepts
 
-**Colour Fringe Width (CFW):** the number of pixels (at 1 µm pitch) where the maximum pairwise channel difference exceeds the visibility threshold δ:
+**Colour Fringe Width (CFW):** A pixel is considered to exhibit a visible colour fringe if and only if all three of the following conditions are satisfied simultaneously:
 
-$$\text{CFW}(z) = \sum_x \mathbf{1}\!\left[\max(|R-G|,\,|R-B|,\,|G-B|) > \delta\right]$$
+1. **C1 (lower brightness):** every channel exceeds 15% of maximum intensity — $\min(I_R, I_G, I_B) > \delta_\text{low}$
+2. **C2 (inter-channel difference):** at least one pairwise channel difference exceeds 15% — $\max(|I_R - I_G|,\,|I_R - I_B|,\,|I_G - I_B|) > \delta$
+3. **C3 (upper brightness):** at least one channel is below 80% — $\min(I_R, I_G, I_B) < \delta_\text{high}$
+
+CFW is the spatial extent (µm) of the contiguous region where all three conditions hold:
+
+$$\text{CFW}(z) = x_\text{last} - x_\text{first} + 1$$
+
+Default thresholds: $\delta_\text{low} = 0.15$, $\delta = 0.15$, $\delta_\text{high} = 0.80$.
 
 **Modelling hierarchy:**
 

@@ -91,20 +91,11 @@ def compute_chl_curve(
 
 # ── RoRi focus / aperture-dependent CHL ──────────────────────────────────────
 
-#: RoRi-1: 5-zone weighted average.
+#: RoRi: 5-zone weighted average (energy-weighted best focus).
 #: Pupil coords: 0, √¼, √½, √¾, 1  →  weights: 1, 12.8, 14.4, 12.8, 1 / 42
-_RORI1_PY      = (0.0, 0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
-_RORI1_WEIGHTS = (1.0, 12.8, 14.4, 12.8, 1.0)
-_RORI1_SUM     = 42.0
-
-#: RoRi-4: ρ²-weighted mean using RoRi-1 nodes (orthogonal focal plane).
-#: Derived from the condition that CHL and SA contributions are uncorrelated
-#: (zero cross-term in the RSS decomposition).  Same 5 ray samples as RoRi-1;
-#: weights = _RORI1_WEIGHTS × ρ_i².  The paraxial node (ρ=0) drops out.
-#: RoRi4 = (3.2·SK(√¼) + 7.2·SK(√½) + 9.6·SK(√¾) + 1·SK(1)) / 21
-_RORI4_PY      = (0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
-_RORI4_WEIGHTS = (3.2, 7.2, 9.6, 1.0)   # = _RORI1_WEIGHTS[1:] × _RORI1_PY[1:]²
-_RORI4_SUM     = 21.0
+_RORI_PY      = (0.0, 0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
+_RORI_WEIGHTS = (1.0, 12.8, 14.4, 12.8, 1.0)
+_RORI_SUM     = 42.0
 
 
 def _sk_real(optic, Py: float, wl_um: float) -> float:
@@ -123,23 +114,23 @@ def _sk_real(optic, Py: float, wl_um: float) -> float:
     return -y * N / M
 
 
-def compute_rori1_spot_curves(
+def compute_rori_spot_curves(
     optic,
     wavelengths_nm: np.ndarray | None = None,
     ref_wavelength_nm: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute RoRi-1 CHL and residual geometric spot radius per wavelength.
+    """Compute RoRi CHL and residual geometric spot radius per wavelength.
 
     Uses the 5-zone weighted average formula::
 
-        RoRi1(λ) = (SK(0) + 12.8·SK(√¼) + 14.4·SK(√½) + 12.8·SK(√¾) + SK(1)) / 42
+        RoRi(λ) = (SK(0) + 12.8·SK(√¼) + 14.4·SK(√½) + 12.8·SK(√¾) + SK(1)) / 42
 
     In addition to the CHL curve, returns a *spot radius curve* rho_sa(λ):
     the RMS geometric spot radius at each wavelength's RoRi best focus.
 
-    The formula (small-angle approximation)::
+    The formula::
 
-        y_spot(Py) = [SK(Py) − RoRi(λ)] × Py / (2 × FNO)
+        y_spot(Py) = [SK(Py) − RoRi(λ)] × Py / sqrt(4·FNO² − 1)
         rho_sa(λ)  = sqrt( Σ w_i · y_spot(Py_i)² / Σ w_i )
 
     Pass ``spot_curve[:, 1]`` as ``rho_sa_um=`` to
@@ -162,18 +153,18 @@ def compute_rori1_spot_curves(
     paraxial = optic.paraxial
     z_start  = float(paraxial.surfaces.positions[1, 0]) - 1.0
 
-    _py = np.array(_RORI1_PY)
-    _w  = np.array(_RORI1_WEIGHTS, dtype=float)
+    _py = np.array(_RORI_PY)
+    _w  = np.array(_RORI_WEIGHTS, dtype=float)
 
     def _rori_and_sa(wl_nm: float) -> tuple[float, float]:
         wl_um = wl_nm / 1000.0
         sks   = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
-                         + [_sk_real(optic, py, wl_um) for py in _RORI1_PY[1:]])
-        rori  = float(np.dot(_w, sks) / _RORI1_SUM)                    # mm
+                         + [_sk_real(optic, py, wl_um) for py in _RORI_PY[1:]])
+        rori  = float(np.dot(_w, sks) / _RORI_SUM)                    # mm
         # Transverse position at z = rori of each pupil zone
         _denom = np.sqrt(4.0 * fno**2 - 1.0)
         y_spots = (sks - rori) * _py / _denom                          # mm
-        rho_sa  = float(np.sqrt(np.dot(_w, y_spots**2) / _RORI1_SUM))  # mm (RMS)
+        rho_sa  = float(np.sqrt(np.dot(_w, y_spots**2) / _RORI_SUM))  # mm (RMS)
         return rori, rho_sa
 
     rori_arr   = np.empty(len(wls))
@@ -190,67 +181,6 @@ def compute_rori1_spot_curves(
 
 
 
-
-def compute_rori4_spot_curves(
-    optic,
-    wavelengths_nm: np.ndarray | None = None,
-    ref_wavelength_nm: float | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute RoRi-4 CHL and residual geometric spot radius per wavelength.
-
-    RoRi-4 is the **ρ²-weighted mean** back-focal intercept:
-
-        RoRi4(λ) = (3.2·SK(√¼) + 7.2·SK(√½) + 9.6·SK(√¾) + 1·SK(1)) / 21
-
-    This focal plane satisfies the **orthogonality condition**: the cross-term
-    in the RSS decomposition ρ² = ρ_CHL² + ρ_SA² is exactly zero, i.e. the
-    CHL and SA blur contributions are statistically uncorrelated under the
-    RoRi-1 quadrature weights.  The same five ray samples as RoRi-1 are used;
-    the paraxial node (ρ=0) drops out because its weight w₀·ρ₀² = 0.
-
-    The SA is still computed using the full RoRi-1 weights (including the
-    paraxial node), which is consistent: the cross-term vanishes because the
-    ρ=0 term contributes zero to the cross-sum.
-
-    Returns
-    -------
-    chl_curve : np.ndarray, shape (N, 2)
-        ``[λ_nm, CHL_µm]`` — orthogonal best-focus focal shift.
-    spot_curve : np.ndarray, shape (N, 2)
-        ``[λ_nm, rho_sa_µm]`` — RMS geometric spot radius at RoRi-4 plane.
-    """
-    wls, ref_wl = _resolve_wl_grid(optic, wavelengths_nm, ref_wavelength_nm)
-    fno      = float(optic.paraxial.FNO())
-    paraxial = optic.paraxial
-    z_start  = float(paraxial.surfaces.positions[1, 0]) - 1.0
-
-    _py1 = np.array(_RORI1_PY)
-    _w1  = np.array(_RORI1_WEIGHTS, dtype=float)
-    _w4  = np.array(_RORI4_WEIGHTS, dtype=float)
-
-    def _rori4_and_sa(wl_nm: float) -> tuple[float, float]:
-        wl_um = wl_nm / 1000.0
-        # Same 5 ray traces as RoRi-1 (paraxial + 4 real)
-        sks = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
-                       + [_sk_real(optic, py, wl_um) for py in _RORI1_PY[1:]])
-        # RoRi-4: ρ²-weighted mean (paraxial node dropped — weight is zero)
-        rori = float(np.dot(_w4, sks[1:]) / _RORI4_SUM)
-        # SA: full RoRi-1 weights (cross-term vanishes by construction)
-        _denom = np.sqrt(4.0 * fno**2 - 1.0)
-        y_spots = (sks - rori) * _py1 / _denom
-        rho_sa  = float(np.sqrt(np.dot(_w1, y_spots**2) / _RORI1_SUM))
-        return rori, rho_sa
-
-    rori_arr   = np.empty(len(wls))
-    rho_sa_arr = np.empty(len(wls))
-    for i, wl in enumerate(wls):
-        rori_arr[i], rho_sa_arr[i] = _rori4_and_sa(float(wl))
-
-    rori_ref, _ = _rori4_and_sa(float(ref_wl))
-    chl_um    = (rori_arr   - rori_ref) * 1000.0
-    rho_sa_um =  rho_sa_arr             * 1000.0
-
-    return np.column_stack((wls, chl_um)), np.column_stack((wls, rho_sa_um))
 
 
 
@@ -623,8 +553,7 @@ def compute_polychromatic_esf_geom(
 
 __all__ = [
     "compute_chl_curve",
-    "compute_rori1_spot_curves",
-    "compute_rori4_spot_curves",
+    "compute_rori_spot_curves",
     "precompute_ray_fan",
     "compute_polychromatic_esf",
     "compute_polychromatic_esf_geom",

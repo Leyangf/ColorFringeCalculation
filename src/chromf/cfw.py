@@ -24,10 +24,10 @@ except ModuleNotFoundError:
 # =============================================================================
 #                           Constants & global data
 # =============================================================================
-DEFAULT_FNUMBER: float = 1.4
-EXPOSURE_SLOPE: float = 8.0
+DEFAULT_FNUMBER: float = 2.0
+EXPOSURE_SLOPE: float = 4.0
 DISPLAY_GAMMA: float = 1.8
-COLOR_DIFF_THRESHOLD: float = 0.2
+COLOR_DIFF_THRESHOLD: float = 0.15
 EDGE_HALF_WINDOW_PX: int = 400
 
 ALLOWED_PSF_MODES: tuple[str, ...] = ("disc", "gauss")
@@ -100,7 +100,6 @@ def _gauss_esf(x: float, rho: float) -> float:
     return 0.5 * (1.0 + _erf(x / (_sqrt(2.0) * 0.5 * rho)))
 
 
-
 @njit(cache=True)
 def _edge_response_jit(
     x: float,
@@ -111,13 +110,13 @@ def _edge_response_jit(
     chl_curve: np.ndarray,
     f_number: float,
     psf_kind: Literal["disc", "gauss"],
-    sa_curve: np.ndarray,   # residual spot radius per wavelength (µm); zeros = no SA
+    sa_curve: np.ndarray,  # residual spot radius per wavelength (µm); zeros = no SA
 ) -> float:
     denom = _sqrt(4.0 * f_number**2.0 - 1.0)
     acc = 0.0
     for n in range(chl_curve.size):
         rho_chl = _fabs((z - chl_curve[n]) / denom)
-        rho = _sqrt(rho_chl**2 + sa_curve[n]**2)   # quadrature: defocus ⊕ SA
+        rho = _sqrt(rho_chl**2 + sa_curve[n] ** 2)  # quadrature: defocus ⊕ SA
         if psf_kind == "disc":
             weight = _disc_esf(x, rho)
         else:
@@ -143,7 +142,7 @@ def _edge_response_vec_jit(
     sa_curve: np.ndarray,
 ) -> np.ndarray:
     """Vectorised variant of _edge_response_jit: processes an array of x values."""
-    denom = _sqrt(4.0 * f_number ** 2 - 1.0)
+    denom = _sqrt(4.0 * f_number**2 - 1.0)
     norm = 0.0
     for n in range(sensor.size):
         norm += sensor[n]
@@ -154,7 +153,7 @@ def _edge_response_vec_jit(
         acc = 0.0
         for n in range(chl_curve.size):
             rho_chl = _fabs((z - chl_curve[n]) / denom)
-            rho = _sqrt(rho_chl ** 2 + sa_curve[n] ** 2)
+            rho = _sqrt(rho_chl**2 + sa_curve[n] ** 2)
             if psf_kind == "disc":
                 weight = _disc_esf(x, rho)
             else:
@@ -195,13 +194,22 @@ def edge_response(
     gamma_val = DISPLAY_GAMMA if gamma is None else float(gamma)
     chl = chl_curve_um.astype(np.float64, copy=False)
 
-    sa = (np.zeros_like(chl, dtype=np.float64)
-          if rho_sa_um is None
-          else rho_sa_um.astype(np.float64, copy=False))
+    sa = (
+        np.zeros_like(chl, dtype=np.float64)
+        if rho_sa_um is None
+        else rho_sa_um.astype(np.float64, copy=False)
+    )
 
     return _edge_response_jit(
-        float(x_um), float(z_um), slope, gamma_val,
-        sensor, chl, float(f_number), psf_mode, sa,  # type: ignore[arg-type]
+        float(x_um),
+        float(z_um),
+        slope,
+        gamma_val,
+        sensor,
+        chl,
+        float(f_number),
+        psf_mode,
+        sa,  # type: ignore[arg-type]
     )
 
 
@@ -218,9 +226,12 @@ def edge_rgb_response(
     sensor_response: dict[str, np.ndarray] | None = None,
 ) -> tuple[float, float, float]:
     kw = dict(
-        exposure_slope=exposure_slope, gamma=gamma,
-        chl_curve_um=chl_curve_um, rho_sa_um=rho_sa_um,
-        f_number=f_number, psf_mode=psf_mode,
+        exposure_slope=exposure_slope,
+        gamma=gamma,
+        chl_curve_um=chl_curve_um,
+        rho_sa_um=rho_sa_um,
+        f_number=f_number,
+        psf_mode=psf_mode,
         sensor_response=sensor_response,
     )
     return (
@@ -260,16 +271,21 @@ def edge_rgb_response_vec(
     slope = EXPOSURE_SLOPE if exposure_slope is None else float(exposure_slope)
     gamma_val = DISPLAY_GAMMA if gamma is None else float(gamma)
     chl = chl_curve_um.astype(np.float64, copy=False)
-    sa = (np.zeros_like(chl, dtype=np.float64)
-          if rho_sa_um is None
-          else rho_sa_um.astype(np.float64, copy=False))
+    sa = (
+        np.zeros_like(chl, dtype=np.float64)
+        if rho_sa_um is None
+        else rho_sa_um.astype(np.float64, copy=False)
+    )
     xa = np.ascontiguousarray(x_arr, dtype=np.float64)
-    r = _edge_response_vec_jit(xa, float(z_um), slope, gamma_val,
-                               _sr["R"], chl, float(f_number), psf_mode, sa)  # type: ignore[arg-type]
-    g = _edge_response_vec_jit(xa, float(z_um), slope, gamma_val,
-                               _sr["G"], chl, float(f_number), psf_mode, sa)  # type: ignore[arg-type]
-    b = _edge_response_vec_jit(xa, float(z_um), slope, gamma_val,
-                               _sr["B"], chl, float(f_number), psf_mode, sa)  # type: ignore[arg-type]
+    r = _edge_response_vec_jit(
+        xa, float(z_um), slope, gamma_val, _sr["R"], chl, float(f_number), psf_mode, sa
+    )  # type: ignore[arg-type]
+    g = _edge_response_vec_jit(
+        xa, float(z_um), slope, gamma_val, _sr["G"], chl, float(f_number), psf_mode, sa
+    )  # type: ignore[arg-type]
+    b = _edge_response_vec_jit(
+        xa, float(z_um), slope, gamma_val, _sr["B"], chl, float(f_number), psf_mode, sa
+    )  # type: ignore[arg-type]
     return r, g, b
 
 
@@ -317,18 +333,30 @@ def detect_fringe_binary(
     color_diff_threshold: float | None = None,
     sensor_response: dict[str, np.ndarray] | None = None,
 ) -> int:
-    threshold = COLOR_DIFF_THRESHOLD if color_diff_threshold is None else color_diff_threshold
+    threshold = (
+        COLOR_DIFF_THRESHOLD if color_diff_threshold is None else color_diff_threshold
+    )
     r, g, b = edge_rgb_response(
-        x_um, z_um,
-        exposure_slope=exposure_slope, gamma=gamma,
-        chl_curve_um=chl_curve_um, rho_sa_um=rho_sa_um,
-        f_number=f_number, psf_mode=psf_mode,
+        x_um,
+        z_um,
+        exposure_slope=exposure_slope,
+        gamma=gamma,
+        chl_curve_um=chl_curve_um,
+        rho_sa_um=rho_sa_um,
+        f_number=f_number,
+        psf_mode=psf_mode,
         sensor_response=sensor_response,
     )
-    return int(bool(is_fringe_mask(
-        np.asarray(r), np.asarray(g), np.asarray(b),
-        diff_threshold=threshold,
-    )))
+    return int(
+        bool(
+            is_fringe_mask(
+                np.asarray(r),
+                np.asarray(g),
+                np.asarray(b),
+                diff_threshold=threshold,
+            )
+        )
+    )
 
 
 def _cfw_from_mask(fringed: np.ndarray, gap_fill: int = 5) -> int:
@@ -367,10 +395,14 @@ def fringe_width(
     half = EDGE_HALF_WINDOW_PX if xrange_val is None else int(xrange_val)
     xs = np.arange(-half, half + 1, dtype=np.float64)
     r, g, b = edge_rgb_response_vec(
-        xs, z_um,
-        exposure_slope=exposure_slope, gamma=gamma,
-        chl_curve_um=chl_curve_um, rho_sa_um=rho_sa_um,
-        f_number=f_number, psf_mode=psf_mode,
+        xs,
+        z_um,
+        exposure_slope=exposure_slope,
+        gamma=gamma,
+        chl_curve_um=chl_curve_um,
+        rho_sa_um=rho_sa_um,
+        f_number=f_number,
+        psf_mode=psf_mode,
         sensor_response=sensor_response,
     )
     thr = COLOR_DIFF_THRESHOLD if color_diff_threshold is None else color_diff_threshold

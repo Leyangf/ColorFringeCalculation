@@ -53,7 +53,7 @@ where $\rho(z,\lambda)$ is the blur half-radius at defocus $z$ for wavelength $\
 
 ### Definition
 
-$\mathrm{CHL}(\lambda)$ is the axial distance (µm) between the focal plane of wavelength $\lambda$ and a reference wavelength $\lambda_{\mathrm{ref}}$. Three focal-plane models are compared.
+$\mathrm{CHL}(\lambda)$ is the axial distance (µm) between the focal plane of wavelength $\lambda$ and a reference wavelength $\lambda_{\mathrm{ref}}$. Two focal-plane models are compared.
 
 ### Model 1: Paraxial CHL
 
@@ -67,7 +67,7 @@ $$\mathrm{CHL}_{\mathrm{par}}(\lambda) = \bigl[f_2'(\lambda) - f_2'(\lambda_{\ma
 
 > **Properties:** independent of aperture; captures secondary spectrum only.
 
-### Model 2: RoRi-1 CHL (energy-weighted)
+### Model 2: RoRi CHL (energy-weighted)
 
 For a finite aperture, trace real rays at five pupil heights $\rho_i \in \{0,\;\sqrt{1/4},\;\sqrt{1/2},\;\sqrt{3/4},\;1\}$. The back-focal intercept of each ray is:
 
@@ -75,23 +75,15 @@ $$\mathrm{SK}(\rho_i, \lambda) = -\frac{y \cdot N}{M}$$
 
 where $(M, N)$ are the direction cosines of the exiting ray and $y$ is its height at the last surface.
 
-The RoRi-1 focal plane is the weighted mean:
+The RoRi focal plane is the weighted mean:
 
-$$\mathrm{RoRi}_1(\lambda) = \frac{\displaystyle\sum_{i=0}^{4} w_i \cdot \mathrm{SK}(\rho_i, \lambda)}{\displaystyle\sum_{i} w_i}$$
+$$\mathrm{RoRi}(\lambda) = \frac{\displaystyle\sum_{i=0}^{4} w_i \cdot \mathrm{SK}(\rho_i, \lambda)}{\displaystyle\sum_{i} w_i}$$
 
 with weights $w_i = \{1,\;12.8,\;14.4,\;12.8,\;1\}$ and $\sum w_i = 42$.
 
-$$\mathrm{CHL}_{\mathrm{RoRi\text{-}1}}(\lambda) = \bigl[\mathrm{RoRi}_1(\lambda) - \mathrm{RoRi}_1(\lambda_{\mathrm{ref}})\bigr] \times 10^3 \quad (\mu\mathrm{m})$$
+$$\mathrm{CHL}_{\mathrm{RoRi}}(\lambda) = \bigl[\mathrm{RoRi}(\lambda) - \mathrm{RoRi}(\lambda_{\mathrm{ref}})\bigr] \times 10^3 \quad (\mu\mathrm{m})$$
 
 > **Properties:** aperture-dependent; includes spherochromatism.
-
-### Model 3: RoRi-4 CHL (ρ²-weighted, orthogonal)
-
-Uses only the four non-paraxial nodes with $\rho^2$-weighted averaging, so that the CHL and SA blur contributions are **orthogonal** in the quadrature decomposition:
-
-$$\mathrm{RoRi}_4(\lambda) = \frac{\displaystyle\sum_{i=1}^{4} w_i \rho_i^2 \cdot \mathrm{SK}(\rho_i, \lambda)}{\displaystyle\sum_{i=1}^{4} w_i \rho_i^2}$$
-
-with weights $\{3.2,\;7.2,\;9.6,\;1.0\}$ and $\sum = 21$.
 
 ### Spherochromatism
 
@@ -101,7 +93,7 @@ $$\Delta\mathrm{CHL}_{\mathrm{sphchrom}}(\lambda) = \mathrm{CHL}_{\mathrm{RoRi}}
 
 ### Plot content
 
-Single panel: three CHL curves (paraxial, RoRi-1, RoRi-4) with 6th-order polynomial fits for visual smoothing.
+Single panel: two CHL curves (paraxial, RoRi) with 6th-order polynomial fits for visual smoothing.
 
 ---
 

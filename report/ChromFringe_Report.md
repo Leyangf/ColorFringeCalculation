@@ -2,7 +2,7 @@
 title: ChromFringe Technical Research Report
 tags: [optics, chromatic-aberration, PSF, research]
 created: 2026-03-10
-updated: 2026-03-13
+updated: 2026-03-14
 ---
 
 # ChromFringe Technical Research Report
@@ -142,7 +142,7 @@ chromf/__init__.py
   │           └── spectrum_loader.py → pandas (CSV I/O), scipy (CubicSpline)
   ├── from chromf.spectrum_loader import channel_products
   └── from chromf.optiland_bridge import compute_chl_curve,
-        compute_rori1_spot_curves, compute_rori4_spot_curves, precompute_ray_fan,
+        compute_rori_spot_curves, precompute_ray_fan,
         compute_polychromatic_esf, compute_polychromatic_esf_geom,
         bake_wavelength_esfs, apply_sensor_weights
           ├── from chromf.spectrum_loader import channel_products
@@ -164,8 +164,7 @@ flowchart LR
 
     subgraph optiland_bridge
         CHL[compute_chl_curve\nParaxial CHL λ→µm]
-        RORI1[compute_rori1_spot_curves\nRoRi-1 CHL + ρ_sa]
-        RORI4[compute_rori4_spot_curves\nRoRi-4 CHL + ρ_sa]
+        RORI[compute_rori_spot_curves\nRoRi CHL + ρ_sa]
         FAN[precompute_ray_fan\n32×31 TA₀ + slope]
         FFT[compute_polychromatic_esf\nFFT diffraction ESF]
         GEOM[compute_polychromatic_esf_geom\nRay-fan extrapolation ESF]
@@ -186,11 +185,11 @@ flowchart LR
         FW[fringe_width\nTotal CFW in µm]
     end
 
-    ZMX --> CHL & RORI1 & RORI4 & FAN & FFT & GEOM & BAKE
+    ZMX --> CHL & RORI & FAN & FFT & GEOM & BAKE
     BAKE --> APPLY
     CSV --> SD
     SD --> ER & APPLY
-    CHL & RORI1 & RORI4 --> ER
+    CHL & RORI --> ER
     ER --> ERGB --> DFB
     ER --> ERVEC --> IFM --> FW
 ```
@@ -213,9 +212,10 @@ CFW detection + channel-pair difference analysis
 **`cfw_geom_demo.ipynb` (geometric/analytic path):**
 
 ```
-Load lens → Extract aberration curves (CHL / RoRi-1 / RoRi-4) → Precompute ray fans →
+Load lens → Extract aberration curves (CHL / RoRi) → Precompute ray fans →
 Interactive viewer (PSF model × CHL model × defocus) →
-Static comparison experiments (5a: PSF model | 5b: orthogonality test | 5c: Geom Fast convergence)
+Static comparison experiments (5a: PSF model | 5b: SA effect | 5c: Geom Fast convergence) →
+Per-defocus ESF diagnostic (Section 6, Geom Fast 16-node)
 ```
 
 ---
@@ -254,8 +254,7 @@ from chromf import channel_products   # Energy-normalised S·D products
 ```python
 from chromf import (
     compute_chl_curve,              # Paraxial CHL curve
-    compute_rori1_spot_curves,      # RoRi-1 CHL + residual SA spot radius (ρ_SA)
-    compute_rori4_spot_curves,      # RoRi-4 CHL + residual SA spot radius (ρ_SA)
+    compute_rori_spot_curves,       # RoRi CHL + residual SA spot radius (ρ_SA)
     precompute_ray_fan,             # Pre-trace ray fan for fast ESF sweeps
     compute_polychromatic_esf,      # Diffraction ESF (ground truth)
     compute_polychromatic_esf_geom, # Geometric ESF via pre-traced ray fan
@@ -433,17 +432,11 @@ def fringe_width(
 #### Shared Constants
 
 ```python
-#: RoRi-1: 5-zone weighted average.
+#: RoRi: 5-zone weighted average (energy-weighted best focus).
 #: Pupil coords: 0, √¼, √½, √¾, 1  →  weights: 1, 12.8, 14.4, 12.8, 1 / 42
-_RORI1_PY      = (0.0, 0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
-_RORI1_WEIGHTS = (1.0, 12.8, 14.4, 12.8, 1.0)
-_RORI1_SUM     = 42.0
-
-#: RoRi-4: ρ²-weighted mean using RoRi-1 nodes (orthogonal focal plane).
-#: Weights = _RORI1_WEIGHTS[1:] × ρ_i².  The paraxial node (ρ=0) drops out.
-_RORI4_PY      = (0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
-_RORI4_WEIGHTS = (3.2, 7.2, 9.6, 1.0)
-_RORI4_SUM     = 21.0
+_RORI_PY      = (0.0, 0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
+_RORI_WEIGHTS = (1.0, 12.8, 14.4, 12.8, 1.0)
+_RORI_SUM     = 42.0
 
 _CHANNEL_MAP = {"R": "red", "G": "green", "B": "blue"}
 ```
@@ -469,21 +462,12 @@ def compute_chl_curve(
 ```
 
 ```python
-def compute_rori1_spot_curves(
+def compute_rori_spot_curves(
     optic, wavelengths_nm=None, ref_wavelength_nm=None,
 ) -> tuple[np.ndarray, np.ndarray]
 # Returns: (chl_curve [N,2], spot_curve [N,2])
-# RoRi-1: 5-zone weighted average (energy-weighted best focus)
+# RoRi: 5-zone weighted average (energy-weighted best focus)
 # spot_curve[:,1] = ρ_sa(λ), µm, i.e. RMS residual spot radius
-```
-
-```python
-def compute_rori4_spot_curves(
-    optic, wavelengths_nm=None, ref_wavelength_nm=None,
-) -> tuple[np.ndarray, np.ndarray]
-# Returns: (chl_curve [N,2], spot_curve [N,2])
-# RoRi-4: ρ²-weighted mean (orthogonal focal plane where CHL ⊥ SA)
-# Same 5 ray samples as RoRi-1; paraxial node drops out (weight w₀·ρ₀² = 0)
 ```
 
 #### Ray Tracing & ESF Functions
@@ -552,7 +536,7 @@ def apply_sensor_weights(
 # Pure NumPy weighted sum, microsecond-level
 ```
 
-> **Performance:** For the same optical system with 25 defocus steps × 3 channels × 2 cameras (150 ESFs), the two-stage approach requires only 25 × 11 = 275 FFTs + 150 NumPy weightings; the single-step approach would require 150 × 11 = 1650 FFTs. Speedup: **~6×** (single camera ~3×).
+> **Performance:** For the same optical system with 29 defocus steps × 3 channels × 2 cameras (174 ESFs), the two-stage approach requires only 29 × 11 = 319 FFTs + 174 NumPy weightings; the single-step approach would require 174 × 11 = 1914 FFTs. Speedup: **~6×** (single camera ~3×).
 
 ---
 
@@ -649,7 +633,7 @@ y, u = paraxial._trace_generic(1.0, 0.0, z_start, wl_um)
 return float(-y.ravel()[-1] / u.ravel()[-1])
 ```
 
-#### 6.2.4 RoRi-1: Equal-Area Trapezoidal Rule
+#### 6.2.4 RoRi: Equal-Area Trapezoidal Rule
 
 **Quadrature construction.** Divide $[0,1]$ into four equal-area annuli by choosing breakpoints $\rho$ such that $\rho^2$ is uniformly spaced, i.e.\ $\rho^2 \in \{0, 0.25, 0.5, 0.75, 1\}$, giving nodes
 
@@ -661,57 +645,22 @@ $$w_i^{(1)} = \Delta u \cdot \{{\tfrac{1}{2}}, 1, 1, 1, {\tfrac{1}{2}}\} = 0.25 
 
 Rescaling to integer form (×56) and accounting for the area-weight factor $2\rho_i$ absorbed into the quadrature produces the published weights $\{1,\;12.8,\;14.4,\;12.8,\;1\}$ summing to 42:
 
-$$\mathrm{RoRi}_1(\lambda) = \frac{\mathrm{SK}(0) + 12.8\cdot\mathrm{SK}(\sqrt{0.25}) + 14.4\cdot\mathrm{SK}(\sqrt{0.5}) + 12.8\cdot\mathrm{SK}(\sqrt{0.75}) + \mathrm{SK}(1)}{42}$$
+$$\mathrm{RoRi}(\lambda) = \frac{\mathrm{SK}(0) + 12.8\cdot\mathrm{SK}(\sqrt{0.25}) + 14.4\cdot\mathrm{SK}(\sqrt{0.5}) + 12.8\cdot\mathrm{SK}(\sqrt{0.75}) + \mathrm{SK}(1)}{42}$$
 
-**Predictive advantage.** Because the nodes span the full range $\rho \in [0,1]$, including the paraxial limit $\rho=0$ and the marginal ray $\rho=1$, RoRi-1 explicitly captures the extreme focal positions of the lens.  The paraxial contribution anchors the CHL estimate to the secondary spectrum, while the marginal ray ensures the aperture edge is represented.  This broad coverage preserves the full chromatic spread of $\mathrm{SK}(\rho,\lambda)$, which benefits prediction of fringe visibility at low tone-curve exposures where even small channel differences cross the detection threshold.
+**Predictive advantage.** Because the nodes span the full range $\rho \in [0,1]$, including the paraxial limit $\rho=0$ and the marginal ray $\rho=1$, RoRi explicitly captures the extreme focal positions of the lens.  The paraxial contribution anchors the CHL estimate to the secondary spectrum, while the marginal ray ensures the aperture edge is represented.  This broad coverage preserves the full chromatic spread of $\mathrm{SK}(\rho,\lambda)$, which benefits prediction of fringe visibility at low tone-curve exposures where even small channel differences cross the detection threshold.
 
-Implementation (`optiland_bridge.py`, `compute_rori1_spot_curves`):
+Implementation (`optiland_bridge.py`, `compute_rori_spot_curves`):
 ```python
-_RORI1_PY      = (0.0, 0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
-_RORI1_WEIGHTS = (1.0, 12.8, 14.4, 12.8, 1.0)
-_RORI1_SUM     = 42.0
+_RORI_PY      = (0.0, 0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
+_RORI_WEIGHTS = (1.0, 12.8, 14.4, 12.8, 1.0)
+_RORI_SUM     = 42.0
 
 sks = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
-               + [_sk_real(optic, py, wl_um) for py in _RORI1_PY[1:]])
-rori1 = float(np.dot(_RORI1_WEIGHTS, sks) / _RORI1_SUM)
+               + [_sk_real(optic, py, wl_um) for py in _RORI_PY[1:]])
+rori = float(np.dot(_RORI_WEIGHTS, sks) / _RORI_SUM)
 ```
 
-#### 6.2.5 RoRi-4: ρ²-Weighted Orthogonal Focal Plane
-
-**Quadrature construction.** RoRi-4 uses the same five ray samples as RoRi-1 but applies **ρ²-weighted** averaging.  The weights are derived from the RoRi-1 weights multiplied by the squared pupil heights:
-
-$$w_i^{(4)} = w_i^{(1)} \cdot \rho_i^2$$
-
-Since $\rho_0 = 0$, the paraxial node drops out, leaving four non-trivial nodes:
-
-| $k$ | $\rho_k$ | $w_k^{(1)}$ | $w_k^{(4)} = w_k^{(1)} \cdot \rho_k^2$ |
-|-----|----------|-------------|----------------------------------------|
-| 1 | $\sqrt{0.25} = 0.5$ | 12.8 | 3.2 |
-| 2 | $\sqrt{0.5} \approx 0.707$ | 14.4 | 7.2 |
-| 3 | $\sqrt{0.75} \approx 0.866$ | 12.8 | 9.6 |
-| 4 | 1.0 | 1.0 | 1.0 |
-
-Sum: $3.2 + 7.2 + 9.6 + 1.0 = 21$
-
-$$\mathrm{RoRi}_4(\lambda) = \frac{3.2\cdot\mathrm{SK}(\sqrt{0.25}) + 7.2\cdot\mathrm{SK}(\sqrt{0.5}) + 9.6\cdot\mathrm{SK}(\sqrt{0.75}) + 1\cdot\mathrm{SK}(1)}{21}$$
-
-**Orthogonality property.** The RoRi-4 focal plane satisfies the condition that the cross-term in the RSS decomposition $\rho^2 = \rho_\text{CHL}^2 + \rho_\text{SA}^2$ is exactly zero under the RoRi-1 quadrature weights.  That is, the CHL and SA blur contributions are statistically uncorrelated.  The SA is still computed using the full RoRi-1 weights (including the paraxial node), which is consistent because the $\rho=0$ term contributes zero to the cross-sum.
-
-Implementation (`optiland_bridge.py`, `compute_rori4_spot_curves`):
-```python
-_RORI4_PY      = (0.5, 0.7071067811865476, 0.8660254037844387, 1.0)
-_RORI4_WEIGHTS = (3.2, 7.2, 9.6, 1.0)
-_RORI4_SUM     = 21.0
-
-sks = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
-               + [_sk_real(optic, py, wl_um) for py in _RORI1_PY[1:]])
-rori4 = float(np.dot(_RORI4_WEIGHTS, sks[1:]) / _RORI4_SUM)
-# SA: full RoRi-1 weights (cross-term vanishes by construction)
-y_spots = (sks - rori4) * _py1 / (2.0 * fno)
-rho_sa  = float(np.sqrt(np.dot(_w1, y_spots**2) / _RORI1_SUM))
-```
-
-#### 6.2.6 RoRi CHL Curve
+#### 6.2.5 RoRi CHL Curve
 
 For all variants, the CHL curve is computed by subtracting the reference-wavelength value:
 
@@ -727,16 +676,16 @@ Spherical aberration causes different aperture zones to focus at different axial
 
 At the RoRi focal plane, the lateral displacement of each ray at pupil height $\rho_i$ (small-angle approximation):
 
-$$y_\text{spot}(\rho_i, \lambda) = \frac{[\mathrm{SK}(\rho_i, \lambda) - \mathrm{RoRi}(\lambda)] \cdot \rho_i}{2N}$$
+$$y_\text{spot}(\rho_i, \lambda) = \frac{[\mathrm{SK}(\rho_i, \lambda) - \mathrm{RoRi}(\lambda)] \cdot \rho_i}{\sqrt{4N^2 - 1}} \times 10^3 \quad (\mu\mathrm{m})$$
 
 #### 6.3.2 RMS Residual Spot
 
 $$\boxed{\rho_\text{sa}(\lambda) = \sqrt{\frac{\sum_i w_i \cdot y_\text{spot}^2(\rho_i, \lambda)}{\sum_i w_i}}}$$
 
-Implementation (`optiland_bridge.py`, `compute_rori1_spot_curves`):
+Implementation (`optiland_bridge.py`, `compute_rori_spot_curves`):
 ```python
-y_spots = (sks - rori) * _py / (2.0 * fno)        # mm
-rho_sa  = float(np.sqrt(np.dot(_w, y_spots**2) / _RORI1_SUM))  # mm (RMS)
+y_spots = (sks - rori) * _py / _denom              # mm
+rho_sa  = float(np.sqrt(np.dot(_w, y_spots**2) / _RORI_SUM))   # mm (RMS)
 ```
 
 #### 6.3.3 Total Blur Radius (Quadrature Addition)
@@ -995,11 +944,11 @@ return _exposure_curve(linear, slope) ** gamma
 
 A pixel at position $x$ is classified as a **visible fringe pixel** when **all three** conditions hold simultaneously:
 
-1. **Not near-black:** Every channel exceeds the low threshold: $\min(I_R, I_G, I_B) > \delta_\text{low}$
-2. **Colour shift present:** At least one pairwise channel difference exceeds the threshold: $\max(|I_R - I_G|, |I_R - I_B|, |I_G - I_B|) > \delta$
-3. **Not saturated:** At least one channel is below the high threshold: $\min(I_R, I_G, I_B) < \delta_\text{high}$
+1. **C1 (lower brightness threshold):** Every channel exceeds the low threshold: $\min(I_R, I_G, I_B) > \delta_\text{low}$
+2. **C2 (inter-channel difference threshold):** At least one pairwise channel difference exceeds the threshold: $\max(|I_R - I_G|, |I_R - I_B|, |I_G - I_B|) > \delta$
+3. **C3 (upper brightness threshold):** At least one channel is below the high threshold: $\min(I_R, I_G, I_B) < \delta_\text{high}$
 
-Default thresholds: $\delta = 0.20$ (`COLOR_DIFF_THRESHOLD`), $\delta_\text{low} = 0.15$, $\delta_\text{high} = 0.80$.
+Default thresholds in `cfw.py`: $\delta = 0.20$ (`COLOR_DIFF_THRESHOLD`), $\delta_\text{low} = 0.15$, $\delta_\text{high} = 0.80$. Both research notebooks override $\delta = 0.15$ for all experiments.
 
 Implementation (`cfw.py` lines 276–304, `is_fringe_mask`):
 ```python
@@ -1067,20 +1016,21 @@ Load sensor model (default: Sony A900).
 
 Parameters: `num_rays=400`, `grid_size=512`, `wl_stride=3`, `strategy="chief_ray"`
 
-Calls `bake_wavelength_esfs()` for 29 z-values ($z \in [-800, +600]$, 50 µm step) × 11 wavelengths (400–700 nm, 30 nm step), caching results to `_esf_mono_cache`. This step only needs re-running when the **optical system changes**.
+Calls `bake_wavelength_esfs()` for 29 z-values ($z \in [-700, +700]$, 50 µm step) × 11 wavelengths (400–700 nm, 30 nm step), caching results to `_esf_mono_cache`. This step only needs re-running when the **optical system changes**.
 
 **Stage 3b — Apply Sensor Weights (Sensor-Specific):**
 
 Calls `apply_sensor_weights()` for each z and channel, combining monochromatic ESFs into polychromatic ESFs using sensor spectral weights. This step re-runs when **switching camera models**, taking < 1 second.
 
 ```
-[ 1/25]  z=  -800 µm  R_tr=301  G_tr=270  B_tr=280
+[ 1/29]  z=  -700 µm  mean_wl_tr=263.0
 ...
-[17/25]  z=    +0 µm  R_tr= 48  G_tr= 73  B_tr= 64
-[25/25]  z=  +400 µm  R_tr=202  G_tr=234  B_tr=221
+[15/29]  z=    +0 µm  mean_wl_tr= 63.6
+...
+[29/29]  z=  +700 µm  mean_wl_tr=307.3
 ```
 
-**Key observation:** At $z=0$ (nominal focal plane), the G channel ESF transition width (73) is largest, indicating that the G channel best-focus lies at $z > 0$ (positive defocus); while the R channel (48) and B channel (64) are closer to best-focus at $z < 0$, reflecting the sign differences in the CHL curve.
+**Key observation:** At $z=0$ (nominal focal plane), the mean per-wavelength transition width (~64) is relatively narrow, indicating proximity to the best-focus region. The asymmetry between $z < 0$ and $z > 0$ transition widths reflects the sign of the secondary spectrum: the lens has longer focal length for red wavelengths.
 
 **Step 4: ESF Transition Width Analysis**
 
@@ -1120,8 +1070,7 @@ Each row shows one z-value across three columns:
 
 ```python
 paraxial_curve = compute_chl_curve(lens1, wavelengths_nm=sensor_wl)
-rori1_curve, spot1_curve = compute_rori1_spot_curves(lens1, wavelengths_nm=sensor_wl)
-rori4_curve, spot4_curve = compute_rori4_spot_curves(lens1, wavelengths_nm=sensor_wl)
+rori_curve, spot_curve = compute_rori_spot_curves(lens1, wavelengths_nm=sensor_wl)
 ray_fan_5  = precompute_ray_fan(lens1, num_rho=5)   # coarse
 ray_fan_16 = precompute_ray_fan(lens1, num_rho=16)  # medium
 ray_fan_32 = precompute_ray_fan(lens1, num_rho=32)  # fine
@@ -1129,15 +1078,15 @@ ray_fan_32 = precompute_ray_fan(lens1, num_rho=32)  # fine
 
 Measured results:
 ```
-RoRi-1 spot rho_sa range: 12.2 – 19.0 µm (mean 17.4 µm)
-RoRi-4 spot rho_sa range: 10.8 – 16.8 µm (mean 15.3 µm)
+RoRi spot rho_sa range: 12.2 – 19.0 µm (mean 17.4 µm)
 ```
 
 **Step 3: Diagnostic Plots (3 Groups)**
 
 - **3a.** Illuminant & sensor spectral response (raw vs. energy-normalised S·D products)
-- **3b.** CHL curves (Paraxial vs RoRi-1 vs RoRi-4) — gap quantifies spherochromatism
-- **3c.** Per-pupil SA profile — compares scalar ρ³ model vs polynomial (c₃ρ³ + c₅ρ⁵) vs ray-fan ground truth
+- **3b.** CHL curves (Paraxial vs RoRi) — gap quantifies spherochromatism
+- **3c.** Aberration budget — SA vs CHL blur radius comparison (variance fraction per wavelength)
+- **3d.** Per-pupil SA profile — compares scalar ρ³ model vs polynomial (c₃ρ³ + c₅ρ⁵) vs ray-fan ground truth
 
 **Step 4: Interactive Viewer**
 
@@ -1146,7 +1095,7 @@ Parameter controls:
 - **Gamma**: 1.0–3.0
 - **Exposure**: 1–8
 - **PSF model**: Disc / Gaussian / Geometric Fast (ray fan)
-- **CHL curve**: RoRi-1 / RoRi-4 / Paraxial
+- **CHL curve**: RoRi / Paraxial
 - **Include SA**: on/off
 
 **Step 5: Static Comparison Experiments** (controlled variable design)
@@ -1157,17 +1106,17 @@ Parameter controls:
 |-------|----------------|
 | Disc + Paraxial | Hard-cutoff linear transition |
 | Gaussian + Paraxial | Soft tails, closer to diffraction |
-| Disc + RoRi-1 | With spherochromatism |
-| Gaussian + RoRi-1 | With spherochromatism |
+| Disc + RoRi | With spherochromatism |
+| Gaussian + RoRi | With spherochromatism |
 
-**5b — Orthogonality Test (RoRi-1 vs RoRi-4 with SA)**
+**5b — SA Effect (Disc vs Gaussian with RoRi + SA)**
 
-Tests whether the ρ²-weighted focal plane measurably changes CFW prediction:
+Tests how adding spherical aberration changes CFW predictions:
 
-| Row | CHL | SA | Test item |
-|-----|-----|----|-----------|
-| 1 | RoRi-1 | on | Energy-weighted best focus |
-| 2 | RoRi-4 | on | Orthogonal best focus (CHL ⊥ SA) |
+| Model | SA | Baseline (5a) |
+|-------|-----|--------------|
+| Disc + RoRi | on | C (no SA) |
+| Gaussian + RoRi | on | D (no SA) |
 
 **5c — Geometric Fast Convergence (GL node count)**
 
@@ -1178,6 +1127,14 @@ Tests whether the ρ²-weighted focal plane measurably changes CFW prediction:
 | 3 | 32 | ~20.7 s |
 
 Tests how many Gauss-Legendre nodes are needed for ESF convergence.
+
+**Section 6 — Per-Defocus ESF Diagnostic (Geom Fast 16-node)**
+
+Detailed per-$z$ visualization mirroring the FFT notebook's diagnostic layout. Each row shows one defocus position ($z \in [-700, +700]$ µm, 50 µm step) with three columns:
+
+1. **Raw ESF** — linear polychromatic edge response (pure geometric optics, 16 GL nodes)
+2. **Tone-mapped ESF** — after applying exposure and gamma, with fringe boundary markers
+3. **Pseudo-density fringe map** — RGB ESF rendered as a colour strip, with fringe boundaries
 
 The ray-fan model serves as the reference standard for analytic models:
 
@@ -1224,22 +1181,24 @@ $$\mathrm{ESF}(x;\,z,\lambda) = \sum_k \rho_k W_k \left[\frac{1}{\pi}\arcsin\!\l
 
 ### 9.1 PSF Baking Output (`cfw_fftpsf_demo.ipynb`)
 
-| z (µm) | R Transition Width | G Transition Width | B Transition Width |
-|---------|-------------------|-------------------|-------------------|
-| −800 | 301 | 270 | 280 |
-| −400 | 144 | 116 | 123 |
-| −100 | 56 | 44 | 44 |
-| −50 | 47 | 54 | 48 |
-| 0 | 48 | 73 | 64 |
-| +50 | 62 | 92 | 83 |
-| +100 | 82 | 112 | 102 |
-| +400 | 202 | 234 | 221 |
+Baking grid: 29 z-points ($z \in [-700, +700]$ µm, 50 µm step) × 11 wavelengths (400–700 nm, 30 nm step).
+
+| z (µm) | Mean wl transition |
+|---------|-------------------|
+| −700 | 263 |
+| −400 | 153 |
+| −100 | 64 |
+| −50 | 61 |
+| 0 | 64 |
+| +50 | 71 |
+| +100 | 83 |
+| +400 | 192 |
+| +700 | 307 |
 
 **Interpretation:**
-- **R channel** best-focus at approximately $z \approx -50$ µm (narrowest ESF transition = 47)
-- **G channel** best-focus at approximately $z \approx -100$ µm (narrowest transition = 44)
-- **B channel** best-focus at approximately $z \approx -100$ µm (narrowest transition = 44)
-- In the $z < 0$ direction (towards the lens), R channel transition width > G/B, indicating larger R-wavelength blur circle (longer focal length)
+- Best-focus region is near $z \approx -50$ µm (narrowest mean transition = 61)
+- Transition width increases roughly linearly with $|z|$ away from best focus
+- Asymmetry between $z < 0$ and $z > 0$ reflects the secondary spectrum sign (longer R focal length)
 
 ### 9.2 Measured Aberration Curves
 
@@ -1247,17 +1206,15 @@ $$\mathrm{ESF}(x;\,z,\lambda) = \sum_k \rho_k W_k \left[\frac{1}{\pi}\arcsin\!\l
 
 | Quantity | Range | Description |
 |----------|-------|-------------|
-| $\rho_{sa}(\lambda)$ (RoRi-1) | 12.2 – 19.0 µm (mean 17.4 µm) | RMS residual SA blur at RoRi-1 plane |
-| $\rho_{sa}(\lambda)$ (RoRi-4) | 10.8 – 16.8 µm (mean 15.3 µm) | RMS residual SA blur at RoRi-4 plane |
+| $\rho_{sa}(\lambda)$ (RoRi) | 12.2 – 19.0 µm (mean 17.4 µm) | RMS residual SA blur at RoRi plane |
 | FNO (measured) | 2.0 | Working f-number |
 | Focal length | 85.0 mm | Measured |
 
 ### 9.3 CFW Comparison (Expected Patterns from Static Experiments)
 
 - **Higher exposure** → larger CFW (low-contrast fringes become visible), but at very high exposure saturation causes CFW to decrease
-- **RoRi-1 vs. Paraxial**: In fast lenses with significant spherochromatism, RoRi-1 predictions are closer to reality
+- **RoRi vs. Paraxial**: In fast lenses with significant spherochromatism, RoRi predictions are closer to reality
 - **Including SA**: $\rho_{sa}$ increases total blur, widening the CFW vs. z curve (larger fringe region)
-- **RoRi-1 vs. RoRi-4**: The orthogonal focal plane (RoRi-4) reduces the SA component but may shift CFW peak position
 
 ---
 
@@ -1329,4 +1286,4 @@ Loaded via Optiland `fileio.load_zemax_file()`, returning an `Optic` object supp
 
 ---
 
-*Report based on the ChromFringe codebase (commit c065aa9: multi-zone defocus + SA polynomial curves), updated: 2026-03-11.*
+*Report based on the ChromFringe codebase, updated: 2026-03-14.*
