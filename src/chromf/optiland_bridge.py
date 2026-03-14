@@ -170,8 +170,9 @@ def compute_rori1_spot_curves(
         sks   = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
                          + [_sk_real(optic, py, wl_um) for py in _RORI1_PY[1:]])
         rori  = float(np.dot(_w, sks) / _RORI1_SUM)                    # mm
-        # Transverse position at z = rori of each pupil zone (small-angle)
-        y_spots = (sks - rori) * _py / (2.0 * fno)                     # mm
+        # Transverse position at z = rori of each pupil zone
+        _denom = np.sqrt(4.0 * fno**2 - 1.0)
+        y_spots = (sks - rori) * _py / _denom                          # mm
         rho_sa  = float(np.sqrt(np.dot(_w, y_spots**2) / _RORI1_SUM))  # mm (RMS)
         return rori, rho_sa
 
@@ -235,7 +236,8 @@ def compute_rori4_spot_curves(
         # RoRi-4: ρ²-weighted mean (paraxial node dropped — weight is zero)
         rori = float(np.dot(_w4, sks[1:]) / _RORI4_SUM)
         # SA: full RoRi-1 weights (cross-term vanishes by construction)
-        y_spots = (sks - rori) * _py1 / (2.0 * fno)
+        _denom = np.sqrt(4.0 * fno**2 - 1.0)
+        y_spots = (sks - rori) * _py1 / _denom
         rho_sa  = float(np.sqrt(np.dot(_w1, y_spots**2) / _RORI1_SUM))
         return rori, rho_sa
 
@@ -536,7 +538,7 @@ def precompute_ray_fan(
             M     = float(rays.M.ravel()[-1])
             N_dir = float(rays.N.ravel()[-1])
             TA0_all[k, j]   = y_mm * 1000.0   # mm → µm (signed)
-            slope_all[k, j] = (M / N_dir) if abs(N_dir) > 1e-10 else -float(rho) / (2.0 * fno)
+            slope_all[k, j] = (M / N_dir) if abs(N_dir) > 1e-10 else -float(rho) / np.sqrt(4.0 * fno**2 - 1.0)
 
     fan: dict = {
         "fno":       fno,

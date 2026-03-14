@@ -358,7 +358,7 @@ When switching camera models, only Stage 2 is re-run, enabling rapid sensor comp
 |-----------|-------|
 | Focal length | 85 mm |
 | Working f-number | f/2.0 |
-| Elements | 13 lenses (14 surfaces) |
+| Elements | 6 lenses (12 refractive surfaces) |
 | Prescription format | Zemax ZMX |
 
 This lens was chosen for its well-documented optical design and significant SA at full aperture, making it a challenging test case for colour fringe prediction.
@@ -369,7 +369,7 @@ Aberration curves were extracted over 31 wavelengths (400–700 nm, 10 nm step):
 
 | Quantity | Range | Description |
 |----------|-------|-------------|
-| $\rho_{sa}(\lambda)$ | 11.8 – 18.4 µm (mean 16.8 µm) | RMS residual SA spot radius |
+| $\rho_{sa}(\lambda)$ | 12.2 – 19.0 µm (mean 17.4 µm) | RMS residual SA spot radius |
 | $c_3(\lambda)$ | 24.5 – 46.6 µm | Primary SA polynomial coefficient |
 | $c_5(\lambda)$ | −101.7 – −57.7 µm | Secondary SA polynomial coefficient |
 | $W_{040}(\lambda)$ | 1.871 – 3.141 µm OPD | Seidel SA wavefront coefficient |

@@ -3,7 +3,9 @@
     "allow": [
       "Bash(ls c:/ResearchLab/ChromFringe/data/raw/sensor_leicam8*)",
       "Bash(python3 -:*)",
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(find c:MasterthesisChromFringe -name *optim* -o -name *merit*)",
+      "Bash(pip install:*)"
     ]
   }
 }

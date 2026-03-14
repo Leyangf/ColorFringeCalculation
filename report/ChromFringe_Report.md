@@ -28,17 +28,15 @@ updated: 2026-03-13
   - [[#6.1 Chromatic Aberration (CHL) Geometric Model]]
   - [[#6.2 RoRi Aperture-Weighted Method]]
   - [[#6.3 Residual Spherical Aberration (SA) Blur]]
-  - [[#6.4 Seidel W040 Spherical Aberration Coefficient]]
-  - [[#6.5 ESF Model: Pillbox (Geometric Uniform Disc)]]
-  - [[#6.6 ESF Model: Gaussian PSF]]
-  - [[#6.7 ESF Model: Multi-Zone Defocus (MZD) — Historical]]
-  - [[#6.8 Geometric Pupil Integral (Gauss-Legendre)]]
-  - [[#6.9 Ray-Fan Linear Extrapolation]]
-  - [[#6.10 FFT Fraunhofer Diffraction PSF]]
-  - [[#6.11 Polychromatic ESF Spectral Integration]]
-  - [[#6.12 Energy Normalisation]]
-  - [[#6.13 Tone Mapping and Gamma Correction]]
-  - [[#6.14 CFW Definition and Pixel Detection]]
+  - [[#6.4 ESF Model: Pillbox (Geometric Uniform Disc)]]
+  - [[#6.5 ESF Model: Gaussian PSF]]
+  - [[#6.6 Geometric Pupil Integral (Gauss-Legendre)]]
+  - [[#6.7 Ray-Fan Linear Extrapolation]]
+  - [[#6.8 FFT Fraunhofer Diffraction PSF]]
+  - [[#6.9 Polychromatic ESF Spectral Integration]]
+  - [[#6.10 Energy Normalisation]]
+  - [[#6.11 Tone Mapping and Gamma Correction]]
+  - [[#6.12 CFW Definition and Pixel Detection]]
 - [[#7. Research Notebooks]]
   - [[#7.1 cfw_fftpsf_demo.ipynb — FFT Diffraction Baseline]]
   - [[#7.2 cfw_geom_demo.ipynb — Geometric/Analytic Models]]
@@ -72,10 +70,9 @@ $$\text{Scene (knife-edge)} \;\xrightarrow{D_{65}}\; \text{Illuminant} \;\xright
 
 - Focal length: 85 mm
 - Maximum aperture: f/2 (experiments run at f/2, FNO ≈ 2.0)
-- Elements: 13 lenses (14 surfaces)
+- Elements: 6 lenses (12 refractive surfaces)
 - Key output parameters:
-  - SA spot radius $\rho_{sa}$: 11.8 – 18.4 µm (mean 16.8 µm)
-  - W040: 1.871 – 3.141 µm OPD
+  - SA spot radius $\rho_{sa}$: 12.2 – 19.0 µm (mean 17.4 µm)
 
 ---
 
@@ -95,7 +92,7 @@ ChromFringe/
 │   ├── cfw_fftpsf_demo.ipynb               ← FFT diffraction PSF baseline notebook
 │   └── cfw_geom_demo.ipynb                 ← Geometric/analytic PSF model notebook
 ├── src/chromf/
-│   ├── __init__.py                         ← Public API exports (16 functions)
+│   ├── __init__.py                         ← Public API exports (15 functions)
 │   ├── cfw.py                              ← JIT-compiled CFW core kernels (disc/gauss)
 │   ├── spectrum_loader.py                  ← Spectral data loading & normalisation
 │   └── optiland_bridge.py                  ← Aberration extraction + ESF computation
@@ -118,7 +115,7 @@ graph TD
     SL["spectrum_loader.py\nchannel_products(sensor_model=...)"]
     OB["optiland_bridge.py\nAberration extraction + ESF\n+ bake/apply two-stage"]
     CFW["cfw.py\nJIT ESF core\n+ load_sensor_response()"]
-    INIT["__init__.py\nPublic API (16 functions)"]
+    INIT["__init__.py\nPublic API (15 functions)"]
     NB1["cfw_fftpsf_demo.ipynb\nFFT Ground Truth"]
     NB2["cfw_geom_demo.ipynb\nGeometric/Analytic Models"]
     OPT["optiland\n(third-party)"]
@@ -227,7 +224,7 @@ Static comparison experiments (5a: PSF model | 5b: orthogonality test | 5c: Geom
 
 ### 5.1 `chromf/__init__.py` — Public API
 
-`src/chromf/__init__.py` is the sole external-facing interface layer, exporting 16 functions:
+`src/chromf/__init__.py` is the sole external-facing interface layer, exporting 15 functions:
 
 #### CFW Core Functions (from `cfw.py`)
 
@@ -679,85 +676,7 @@ sks = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
 rori1 = float(np.dot(_RORI1_WEIGHTS, sks) / _RORI1_SUM)
 ```
 
-#### 6.2.5 RoRi-2: Three-Point Gauss–Legendre Rule (Research Analysis, Not Implemented)
-
-**Quadrature construction.** The substitution $u = \rho^2$ transforms the area-weighted integral into the standard form $\int_0^1 f(u)\,du$ with $f(u) = \mathrm{SK}(\sqrt{u},\lambda)$.  The optimal three-point quadrature for this form is the three-point Gauss–Legendre rule on $[0,1]$, which integrates polynomials up to degree $2\cdot 3 - 1 = 5$ exactly.  The nodes and weights are
-
-| $k$ | $u_k$ (node in $u = \rho^2$) | $\rho_k = \sqrt{u_k}$ | $w_k$ |
-|-----|------------------------------|------------------------|-------|
-| 1 | $\frac{1}{2} - \frac{1}{2}\sqrt{\tfrac{3}{5}} \approx 0.1127$ | $0.3357$ | $\tfrac{5}{18}$ |
-| 2 | $\frac{1}{2}$ | $0.7071$ | $\tfrac{8}{18}$ |
-| 3 | $\frac{1}{2} + \frac{1}{2}\sqrt{\tfrac{3}{5}} \approx 0.8873$ | $0.9420$ | $\tfrac{5}{18}$ |
-
-$$\mathrm{RoRi}_2(\lambda) = \frac{5\cdot\mathrm{SK}(0.3357,\lambda) + 8\cdot\mathrm{SK}(0.7071,\lambda) + 5\cdot\mathrm{SK}(0.9420,\lambda)}{18}$$
-
-No paraxial trace is required: all three nodes lie strictly inside $(0,1)$ and are evaluated by real-ray trace only.
-
-**Predictive advantage.** Gauss–Legendre quadrature achieves the highest algebraic precision for a given number of nodes — three GL nodes integrate exactly any $\mathrm{SK}(\rho)$ that is polynomial of degree $\leq 5$ in $u = \rho^2$, whereas the five-node trapezoidal rule is only second-order accurate.  For lenses where spherochromatism has a smooth but nonlinear dependence on $\rho^2$, RoRi-2 delivers a more accurate aperture average with fewer ray traces.  The resulting CHL curve more closely approximates the true energy-weighted chromatic focal shift seen by the sensor, which benefits prediction accuracy at high exposures where the fringe width is sensitive to the precise z-position of the chromatic peak.
-
-Implementation (`optiland_bridge.py`):
-```python
-_RORI2_PY      = (0.3357, 0.7071, 0.9420)
-_RORI2_WEIGHTS = (5.0, 8.0, 5.0)
-_RORI2_SUM     = 18.0
-
-sks   = np.array([_sk_real(optic, py, wl_um) for py in _RORI2_PY])
-rori2 = float(np.dot(_RORI2_WEIGHTS, sks) / _RORI2_SUM)
-```
-
-#### 6.2.6 RoRi-3: Five-Point Gauss–Lobatto Rule (Research Analysis, Not Implemented)
-
-**Quadrature construction.** Gauss–Lobatto quadrature is the variant of Gauss–Legendre in which the two endpoints of the integration interval are constrained to be nodes, and the remaining interior nodes are chosen to maximise algebraic precision subject to that constraint.  For $n$ points with both endpoints fixed, the rule integrates polynomials of degree $\leq 2n-3$ exactly — one degree less than the unconstrained GL rule of the same order, but with the practical benefit that the boundary values $f(0)$ and $f(1)$ are explicitly included.
-
-For the five-point case on $[0,1]$ (two fixed endpoints plus three free interior nodes), the interior nodes are determined by requiring the rule to be exact for all polynomials of degree $\leq 7$.  Under the substitution $u = \rho^2$, the nodes and weights are:
-
-| $k$ | $u_k$ | $\rho_k = \sqrt{u_k}$ | $w_k$ |
-|-----|--------|------------------------|--------|
-| 1 | $0$ | $0$ (paraxial) | $\tfrac{9}{180}$ |
-| 2 | $\dfrac{7 - \sqrt{21}}{14} \approx 0.1727$ | $\approx 0.4155$ | $\tfrac{49}{180}$ |
-| 3 | $\tfrac{1}{2}$ | $\tfrac{1}{\sqrt{2}} \approx 0.7071$ | $\tfrac{64}{180}$ |
-| 4 | $\dfrac{7 + \sqrt{21}}{14} \approx 0.8273$ | $\approx 0.9096$ | $\tfrac{49}{180}$ |
-| 5 | $1$ | $1$ (marginal) | $\tfrac{9}{180}$ |
-
-$$\mathrm{RoRi}_3(\lambda) = \frac{9\cdot\mathrm{SK}(0) + 49\cdot\mathrm{SK}(0.4155) + 64\cdot\mathrm{SK}(0.7071) + 49\cdot\mathrm{SK}(0.9096) + 9\cdot\mathrm{SK}(1)}{180}$$
-
-The paraxial limit $\rho=0$ is evaluated by the paraxial marginal-ray trace; the remaining four nodes use real-ray traces.  The interior nodes $\rho \in \{0.4155, 0.9096\}$ differ from both RoRi-1 ($\{0.5, 0.866\}$) and RoRi-2 ($\{0.3357, 0.9420\}$), reflecting the Lobatto optimisation criterion.
-
-**Design rationale.** RoRi-3 was motivated by the observation that RoRi-2, despite its higher algebraic precision, reduces the chromatic spread of the CHL curve — an effect that degrades CFW prediction at low tone-curve exposures.  By forcing the rule to include $\rho=0$ and $\rho=1$, RoRi-3 attempts to preserve the paraxial and marginal anchors of RoRi-1 while replacing the trapezoidal interior with optimally placed Lobatto nodes.
-
-**Limitation.** The endpoint weights $9/180 = 0.05$ are assigned by the mathematical optimisation criterion, not by physical reasoning.  As a result, the boundary contributions are larger than in RoRi-1 ($1/42 \approx 0.024$) but the interior node positions differ, yielding a CHL spread that is empirically intermediate between RoRi-1 and RoRi-2.  Numerical experiments show that RoRi-3 does not improve upon RoRi-1 for CFW prediction, confirming that the benefit of RoRi-1 arises from the specific combination of node positions inherited from the equal-area construction, not merely from endpoint inclusion.
-
-Implementation (`optiland_bridge.py`):
-```python
-import math
-_sqrt21        = math.sqrt(21.0)
-_RORI3_PY      = (0.0,
-                  math.sqrt((7.0 - _sqrt21) / 14.0),  # ≈ 0.4155
-                  math.sqrt(0.5),                       # ≈ 0.7071
-                  math.sqrt((7.0 + _sqrt21) / 14.0),  # ≈ 0.9096
-                  1.0)
-_RORI3_WEIGHTS = (9.0, 49.0, 64.0, 49.0, 9.0)
-_RORI3_SUM     = 180.0
-
-sks   = np.array([_paraxial_bfl(paraxial, wl_nm, z_start)]
-                 + [_sk_real(optic, py, wl_um) for py in _RORI3_PY[1:]])
-rori3 = float(np.dot(_RORI3_WEIGHTS, sks) / _RORI3_SUM)
-```
-
-#### 6.2.7 Comparison of Quadrature Schemes
-
-| Property | RoRi-1 (trap.) | RoRi-2 (3pt GL) | RoRi-3 (5pt Lobatto) |
-|----------|---------------|-----------------|----------------------|
-| Nodes | $\{0, \sqrt{0.25}, \sqrt{0.5}, \sqrt{0.75}, 1\}$ | $\{0.3357, 0.7071, 0.9420\}$ | $\{0, 0.4155, 0.7071, 0.9096, 1\}$ |
-| Includes $\rho=0,1$ | Yes | No | Yes |
-| Algebraic precision ($u$-degree) | 1 | 5 | 7 |
-| Ray traces required | 4 real + 1 paraxial | 3 real | 4 real + 1 paraxial |
-| CHL spread preservation | Best | Worst | Intermediate |
-| CFW prediction quality | Best | Worst | Intermediate |
-
-The counterintuitive ordering — higher algebraic precision yields worse CFW prediction — arises because the RoRi scalar is not directly optimised for CFW accuracy.  The downstream threshold detection is nonlinear, and CFW prediction depends more on the chromatic spread of the CHL curve than on the accuracy of the aperture-averaged focal position per se.  RoRi-1 preserves this spread as a consequence of its equal-area node placement, which happens to sample the extremes of $\mathrm{SK}(\rho,\lambda)$, rather than through any deliberate design for CFW prediction.
-
-#### 6.2.8 RoRi-4: ρ²-Weighted Orthogonal Focal Plane
+#### 6.2.5 RoRi-4: ρ²-Weighted Orthogonal Focal Plane
 
 **Quadrature construction.** RoRi-4 uses the same five ray samples as RoRi-1 but applies **ρ²-weighted** averaging.  The weights are derived from the RoRi-1 weights multiplied by the squared pupil heights:
 
@@ -792,7 +711,7 @@ y_spots = (sks - rori4) * _py1 / (2.0 * fno)
 rho_sa  = float(np.sqrt(np.dot(_w1, y_spots**2) / _RORI1_SUM))
 ```
 
-#### 6.2.9 RoRi CHL Curve
+#### 6.2.6 RoRi CHL Curve
 
 For all variants, the CHL curve is computed by subtracting the reference-wavelength value:
 
@@ -833,54 +752,15 @@ rho = _sqrt(rho_chl**2 + sa_curve[n]**2)  # Quadrature addition
 
 ---
 
-### 6.4 Seidel W040 Spherical Aberration Coefficient
+### 6.4 ESF Model: Pillbox (Geometric Uniform Disc)
 
-#### 6.4.1 Physical Definition
-
-The primary spherical aberration wavefront coefficient $W_{040}$ describes the highest-order ($\rho^4$ term) departure of the wavefront from the reference sphere:
-
-$$W(\rho) = W_{040} \cdot \rho^4 + W_{020} \cdot \rho^2 \quad (\mu\mathrm{m\;OPD})$$
-
-where the defocus term $W_{020}$ depends on the current image plane position:
-$$W_{020}(z, \lambda) = -\frac{z - \mathrm{CHL}(\lambda)}{8N^2} \quad (\mu\mathrm{m\;OPD})$$
-
-#### 6.4.2 Deriving W040 from Marginal Ray
-
-From Seidel aberration theory, the transverse aberration (TA) is related to the wavefront derivative:
-
-$$\mathrm{TA}(\rho) = -2N \cdot \frac{\partial W}{\partial \rho} = -2N(4W_{040}\rho^3 + 2W_{020}\rho)$$
-
-At the normalised marginal ray ($\rho = 1$), the $\mathrm{TA}_\text{marginal}$ at the RoRi focal plane is:
-
-$$\mathrm{TA}_\text{marginal} = \frac{\mathrm{SK}(\rho=1) - \mathrm{RoRi}}{2N} \quad (\mathrm{mm})$$
-
-At the RoRi focal plane $W_{020}=0$ (approximately), therefore:
-
-$$\mathrm{TA}_\text{marginal} \approx -2N \cdot 4W_{040} \cdot 1 = -8N \cdot W_{040}$$
-
-Solving:
-
-$$\boxed{W_{040}(\lambda) = \frac{-\mathrm{TA}_\text{marginal}(\lambda) \times 10^3}{8N} \quad (\mu\mathrm{m\;OPD})}$$
-
-Implementation (`optiland_bridge.py` lines 222–225):
-```python
-ta_marginal_mm = (sks[-1] - rori) / (2.0 * fno)     # SK(ρ=1) − RoRi
-return -(ta_marginal_mm * 1000.0) / (8.0 * fno)     # µm OPD
-```
-
-**Measured values (Nikon 85mm f/2):** W040 ∈ [1.871, 3.141] µm OPD, varying with wavelength (spherochromatism).
-
----
-
-### 6.5 ESF Model: Pillbox (Geometric Uniform Disc)
-
-#### 6.5.1 Physical Assumption
+#### 6.4.1 Physical Assumption
 
 The PSF is a 2D disc uniformly distributed within radius $\rho$ (geometric blur circle), with intensity distribution:
 
 $$\mathrm{PSF}_\text{geom}(\mathbf{r}) = \frac{1}{\pi\rho^2} \cdot \mathbf{1}[|\mathbf{r}| \leq \rho]$$
 
-#### 6.5.2 ESF Integration
+#### 6.4.2 ESF Integration
 
 The ESF is the projection of the PSF along the $y$-direction followed by cumulative integration (equivalent to convolution of a half-plane with the PSF). For the uniform disc:
 
@@ -900,15 +780,15 @@ def _disc_esf(x: float, rho: float) -> float:
 
 ---
 
-### 6.6 ESF Model: Gaussian PSF
+### 6.5 ESF Model: Gaussian PSF
 
-#### 6.6.1 Physical Assumption
+#### 6.5.1 Physical Assumption
 
 The PSF is a 2D circularly symmetric Gaussian distribution with standard deviation $\sigma \approx 0.5\rho$ (corresponding to the blur circle radius):
 
 $$\mathrm{PSF}_\text{gauss}(\mathbf{r}) = \frac{1}{2\pi\sigma^2}\exp\!\left(-\frac{|\mathbf{r}|^2}{2\sigma^2}\right)$$
 
-#### 6.6.2 ESF
+#### 6.5.2 ESF
 
 The 1D ESF of a Gaussian PSF is the error function (CDF of the standard normal):
 
@@ -926,85 +806,15 @@ def _gauss_esf(x: float, rho: float) -> float:
 
 ---
 
-### 6.7 ESF Model: Multi-Zone Defocus (MZD) — Historical
+### 6.6 Geometric Pupil Integral (Gauss-Legendre)
 
-> **Note:** The MZD model was explored during development but has been removed from `cfw.py` in favour of the geometric ray-fan ESF (`compute_polychromatic_esf_geom` in `optiland_bridge.py`), which achieves the same pupil-resolved SA handling with higher accuracy by using actual traced rays rather than parametric SA polynomials.  The mathematical description is retained here for reference.
-
-#### 6.7.1 Physical Motivation
-
-Spherical aberration causes different aperture zones to focus at different axial positions. Unlike the simple single-scalar ρ_sa model, MZD explicitly resolves the pupil-dependent blur by integrating over Gauss-Legendre pupil nodes, where each node contributes an arcsin ring ESF with a radius that combines defocus and SA in quadrature.
-
-#### 6.7.2 Per-Ring Blur Radius
-
-For each wavelength $\lambda$ and Gauss-Legendre pupil node $\rho_k$, the blur radius combines CHL defocus and primary SA:
-
-$$\rho_\text{CHL} = \frac{|z - \mathrm{CHL}(\lambda)|}{\sqrt{4N^2 - 1}}$$
-
-$$\mathrm{TA}_\text{SA} = \rho_k^3 \cdot 2 \cdot \rho_\text{SA}(\lambda)$$
-
-$$\boxed{R_k = \sqrt{(\rho_k \cdot \rho_\text{CHL})^2 + \mathrm{TA}_\text{SA}^2}}$$
-
-The factor of 2 converts the RMS SA to an approximate marginal-ray value ($\times 2 \approx$ RMS→marginal).
-
-#### 6.7.3 Arcsin Ring ESF
-
-The per-ring ESF is the exact geometric result for a thin annulus of radius $R$:
-
-$$\boxed{\mathrm{ESF}_\text{ring}(x;\,R) = \frac{\arcsin\!\left(\mathrm{clip}\!\left(\dfrac{x}{R},\,-1,\,1\right)\right)}{\pi} + \frac{1}{2}}$$
-
-#### 6.7.4 Pupil Integration
-
-The full ESF integrates over the pupil with area weights:
-
-$$\mathrm{ESF}_\text{MZD}(x;\,z,\lambda) = \sum_k \rho_k \cdot W_k \cdot \mathrm{ESF}_\text{ring}(x;\,R_k)$$
-
-where $\rho_k, W_k$ are Gauss-Legendre nodes and weights on $[0, 1]$.
-
-Implementation (`cfw.py` lines 112–175):
-```python
-def _mzd_edge_response_jit(x, z, slope, gamma, sensor, chl_curve,
-                            f_number, sa_curve, rho_gl, w_gl):
-    for n in range(sensor.size):
-        rho_chl = _fabs((z - chl_curve[n]) / denom)
-        sa = sa_curve[n]
-        for k in range(n_rho):
-            rk = rho_gl[k]
-            sa_zone = rk * rk * rk * 2.0 * sa   # TA_SA ∝ ρ³
-            R = _sqrt((rk * rho_chl) ** 2 + sa_zone * sa_zone)
-            # arcsin ring ESF
-            f_val = _asin(clip(x / R, -1, 1)) / PI + 0.5
-            wl_contrib += rk * w_gl[k] * f_val
-        acc += sensor[n] * wl_contrib / wl_norm
-```
-
-#### 6.7.5 SA Polynomial Coefficients (Removed from Public API)
-
-The former `compute_sa_poly_curves` function fitted the residual transverse aberration at each wavelength's RoRi best focus to a two-term pupil polynomial:
-
-$$\mathrm{TA}_\text{SA}(\rho, \lambda) \approx c_3(\lambda) \cdot \rho^3 + c_5(\lambda) \cdot \rho^5$$
-
-using the 4 non-trivial RoRi pupil zones ($\rho \in \{\sqrt{1/4}, \sqrt{1/2}, \sqrt{3/4}, 1\}$). This captures both primary (3rd-order) and secondary (5th-order) spherical aberration.
-
-Implementation (`optiland_bridge.py` lines 181–239):
-```python
-A = np.column_stack([rho_pts**3, rho_pts**5])      # Design matrix
-coeffs, _, _, _ = np.linalg.lstsq(A, ta_sa[1:], rcond=None)
-c3_arr[i], c5_arr[i] = coeffs[0], coeffs[1]
-```
-
-**Measured values (Nikon 85mm f/2):** c₃ ∈ [24.5, 46.6] µm, c₅ ∈ [−101.7, −57.7] µm.
-
----
-
-### 6.8 Geometric Pupil Integral (Gauss-Legendre)
-
-#### 6.8.1 Physical Principle
+#### 6.5.1 Physical Principle
 
 Directly integrate over the continuous pupil, requiring no PSF shape assumption. For a ray at normalised pupil height $\rho$, the lateral displacement on the defocused image plane is $R(\rho) = |y_\text{image}(\rho)|$ (µm). By geometric optics, this ray's contribution to the ESF equals the uniform-disc ESF at position $x$ (i.e. the arcsin function):
 
 $$\mathrm{ESF}(x) = \int_0^1 \left[\frac{\arcsin\!\left(\mathrm{clip}\!\left(\dfrac{x}{R(\rho)},\,-1,\,1\right)\right)}{\pi} + \frac{1}{2}\right] 2\rho\,d\rho$$
 
-#### 6.8.2 Gauss-Legendre Numerical Integration
+#### 6.5.2 Gauss-Legendre Numerical Integration
 
 Transform $\int_0^1 f(\rho) \cdot 2\rho\,d\rho$ to the standard $[-1,1]$ interval:
 
@@ -1026,15 +836,15 @@ esf_j = np.sum(f_contrib * rho_row * W_row, axis=1)   # (N,)
 
 ---
 
-### 6.9 Ray-Fan Linear Extrapolation
+### 6.7 Ray-Fan Linear Extrapolation
 
-#### 6.9.1 Principle
+#### 6.5.1 Principle
 
 Pre-trace all rays at $z=0$, recording transverse aberration $\mathrm{TA}_0(\rho, \lambda)$ and direction cosine ratio $m(\rho, \lambda) = M/N_\text{dir}$. For any defocus $z$, use linear extrapolation:
 
 $$\boxed{R(\rho;\,z,\lambda) = \left|\mathrm{TA}_0(\rho,\lambda) + m(\rho,\lambda) \cdot z\right| \quad (\mu\mathrm{m})}$$
 
-#### 6.9.2 Error Analysis
+#### 6.5.2 Error Analysis
 
 Linear extrapolation error comes from higher-order terms (refractive surface curvature):
 
@@ -1047,7 +857,7 @@ Implementation (`optiland_bridge.py`, `compute_polychromatic_esf_geom`):
 R = np.abs(TA0 + slope * z_defocus_um)   # (K, N_wl_sub)
 ```
 
-#### 6.9.3 Precomputation Cost
+#### 6.5.3 Precomputation Cost
 
 - Trace 32 × 31 = 992 rays (one-time)
 - Covers all 31 wavelengths (400–700 nm)
@@ -1055,9 +865,9 @@ R = np.abs(TA0 + slope * z_defocus_um)   # (K, N_wl_sub)
 
 ---
 
-### 6.10 FFT Fraunhofer Diffraction PSF
+### 6.8 FFT Fraunhofer Diffraction PSF
 
-#### 6.10.1 Physical Principle
+#### 6.5.1 Physical Principle
 
 Under the Fraunhofer diffraction approximation, the PSF is the squared modulus of the Fourier transform of the exit pupil function:
 
@@ -1067,7 +877,7 @@ where $P(\boldsymbol{\rho})$ is the pupil transmission function and $W(\boldsymb
 
 Implemented by Optiland's `FFTPSF` class: computes OPD via real ray trace, constructs the complex pupil function, then applies FFT.
 
-#### 6.10.2 Wavelength-Corrected Pixel Pitch
+#### 6.5.2 Wavelength-Corrected Pixel Pitch
 
 FFT PSF pixel pitch is proportional to wavelength (Fraunhofer diffraction angular resolution):
 
@@ -1085,14 +895,14 @@ x_j   = (np.arange(n) - n // 2) * dx_j  # Physical coordinates (µm)
 esf_accum += g_norm[j] * np.interp(x_um, x_j, esf_j, ...)
 ```
 
-#### 6.10.3 Key Parameter Choice
+#### 6.5.3 Key Parameter Choice
 
 Using `strategy="chief_ray"` instead of `"best_fit_sphere"`:
 
 - `chief_ray`: Reference sphere centred on the actual chief ray position, **preserves defocus phase** — CHL effects at different wavelengths correctly manifest in the OPD
 - `best_fit_sphere`: Fits and removes defocus, causing all wavelengths to have the same ESF shape, yielding CFW = 0 (incorrect)
 
-#### 6.10.4 ESF → LSF → ESF Conversion
+#### 6.5.4 ESF → LSF → ESF Conversion
 
 $$\mathrm{LSF}(x) = \int_{-\infty}^{+\infty} \mathrm{PSF}(x, y)\,dy$$
 
@@ -1102,7 +912,7 @@ $$\mathrm{ESF}(x) = \int_{-\infty}^{x} \mathrm{LSF}(t)\,dt \approx \mathrm{cumsu
 
 ---
 
-### 6.11 Polychromatic ESF Spectral Integration
+### 6.9 Polychromatic ESF Spectral Integration
 
 For each channel $c$, the ESF is a spectrally weighted sum of monochromatic ESFs:
 
@@ -1127,7 +937,7 @@ linear = acc / norm
 
 ---
 
-### 6.12 Energy Normalisation
+### 6.10 Energy Normalisation
 
 **Goal:** Ensure that a perfectly focused flat-spectrum edge produces unity response in every channel (i.e. ESF transitions from 0 to 1).
 
@@ -1145,9 +955,9 @@ def _energy_norm(sensor, daylight):
 
 ---
 
-### 6.13 Tone Mapping and Gamma Correction
+### 6.11 Tone Mapping and Gamma Correction
 
-#### 6.13.1 Tone Mapping Curve
+#### 6.11.1 Tone Mapping Curve
 
 Models the nonlinear response of camera/display, using a symmetric $\tanh$ curve:
 
@@ -1155,13 +965,13 @@ $$\boxed{T(x;\,\alpha) = \frac{\tanh(\alpha \cdot x)}{\tanh(\alpha)}}$$
 
 where $\alpha$ is the exposure slope (`exposure_slope`). This curve satisfies $T(0)=0$, $T(1)=1$, and has slope $\alpha/\tanh(\alpha)$ near 0 (simulating overexposure effect).
 
-#### 6.13.2 Gamma Correction
+#### 6.11.2 Gamma Correction
 
 Models the sRGB display standard gamma curve:
 
 $$I_\text{display}(x) = T(x;\,\alpha)^\gamma$$
 
-#### 6.13.3 Complete Tone Pipeline
+#### 6.11.3 Complete Tone Pipeline
 
 $$\boxed{I_c(x, z) = \left[\frac{\tanh\!\left(\alpha \cdot \mathrm{ESF}_c(x, z)\right)}{\tanh(\alpha)}\right]^\gamma}$$
 
@@ -1179,9 +989,9 @@ return _exposure_curve(linear, slope) ** gamma
 
 ---
 
-### 6.14 CFW Definition and Pixel Detection
+### 6.12 CFW Definition and Pixel Detection
 
-#### 6.14.1 Fringe Pixel Classification (`is_fringe_mask`)
+#### 6.11.1 Fringe Pixel Classification (`is_fringe_mask`)
 
 A pixel at position $x$ is classified as a **visible fringe pixel** when **all three** conditions hold simultaneously:
 
@@ -1203,7 +1013,7 @@ cond3 = np.minimum(np.minimum(r, g), b) < high_threshold
 return cond1 & cond2 & cond3
 ```
 
-#### 6.14.2 Total CFW (Outer-Boundary Method)
+#### 6.11.2 Total CFW (Outer-Boundary Method)
 
 The CFW is defined as the distance (µm) from the **first** fringed pixel to the **last** fringed pixel in the scan window $x \in [-400, 400]$ µm:
 
@@ -1300,7 +1110,7 @@ Each row shows one z-value across three columns:
 
 ### 7.2 `cfw_geom_demo.ipynb` — Geometric/Analytic Model Validation
 
-**Purpose:** Use analytic PSF models (Pillbox/Gaussian/MZD) and geometric integration methods to predict CFW from RoRi aberration curves, comparing against the ray-fan ground truth.
+**Purpose:** Use analytic PSF models (Pillbox/Gaussian) and geometric integration methods to predict CFW from RoRi aberration curves, comparing against the ray-fan ground truth.
 
 #### Workflow
 
@@ -1319,8 +1129,8 @@ ray_fan_32 = precompute_ray_fan(lens1, num_rho=32)  # fine
 
 Measured results:
 ```
-RoRi-1 spot rho_sa range: 11.8 – 18.4 µm (mean 16.8 µm)
-RoRi-4 spot rho_sa range: 10.4 – 16.3 µm (mean 14.9 µm)
+RoRi-1 spot rho_sa range: 12.2 – 19.0 µm (mean 17.4 µm)
+RoRi-4 spot rho_sa range: 10.8 – 16.8 µm (mean 15.3 µm)
 ```
 
 **Step 3: Diagnostic Plots (3 Groups)**
@@ -1437,8 +1247,8 @@ $$\mathrm{ESF}(x;\,z,\lambda) = \sum_k \rho_k W_k \left[\frac{1}{\pi}\arcsin\!\l
 
 | Quantity | Range | Description |
 |----------|-------|-------------|
-| $\rho_{sa}(\lambda)$ (RoRi-1) | 11.8 – 18.4 µm (mean 16.8 µm) | RMS residual SA blur at RoRi-1 plane |
-| $\rho_{sa}(\lambda)$ (RoRi-4) | 10.4 – 16.3 µm (mean 14.9 µm) | RMS residual SA blur at RoRi-4 plane |
+| $\rho_{sa}(\lambda)$ (RoRi-1) | 12.2 – 19.0 µm (mean 17.4 µm) | RMS residual SA blur at RoRi-1 plane |
+| $\rho_{sa}(\lambda)$ (RoRi-4) | 10.8 – 16.8 µm (mean 15.3 µm) | RMS residual SA blur at RoRi-4 plane |
 | FNO (measured) | 2.0 | Working f-number |
 | Focal length | 85.0 mm | Measured |
 
@@ -1507,7 +1317,6 @@ Loaded via Optiland `fileio.load_zemax_file()`, returning an `Optic` object supp
 | CHL blur radius | $\rho_\text{CHL} = \|z - \text{CHL}(\lambda)\| / \sqrt{4N^2-1}$ |
 | Total blur (quadrature) | $\rho = \sqrt{\rho_\text{CHL}^2 + \rho_{sa}^2}$ |
 | RoRi weighting | $\text{RoRi} = \sum w_i \cdot \text{SK}(\rho_i) / 42$ |
-| W040 coefficient | $W_{040} = -\text{TA}_\text{marginal\,µm} / (8N)$ |
 | SA blur (RMS) | $\rho_{sa} = \sqrt{\sum w_i y_\text{spot}^2 / \sum w_i}$ |
 | Disc (Pillbox) ESF | $\frac{1}{2}(1 + x/\rho)$, linear on $[-\rho, \rho]$ |
 | Gaussian ESF | $\frac{1}{2}[1 + \text{erf}(x/(\sqrt{2}\cdot 0.5\rho))]$ |
