@@ -2,7 +2,7 @@
 title: ChromFringe Technical Research Report
 tags: [optics, chromatic-aberration, PSF, research]
 created: 2026-03-10
-updated: 2026-03-14
+updated: 2026-03-15
 ---
 
 # ChromFringe Technical Research Report
@@ -136,8 +136,8 @@ graph TD
 
 ```
 chromf/__init__.py
-  ├── from chromf.cfw import fringe_width, edge_response, edge_rgb_response,
-  │       edge_rgb_response_vec, detect_fringe_binary, is_fringe_mask, load_sensor_response
+  ├── from chromf.cfw import fringe_width, edge_rgb_response_vec,
+  │       is_fringe_mask, load_sensor_response
   │     └── cfw.py calls spectrum_loader.channel_products(sensor_model="sonya900") at module load
   │           └── spectrum_loader.py → pandas (CSV I/O), scipy (CubicSpline)
   ├── from chromf.spectrum_loader import channel_products
@@ -177,21 +177,17 @@ flowchart LR
     end
 
     subgraph cfw
-        ER["edge_response<br/>Single-channel ESF value"]
-        ERGB["edge_rgb_response<br/>R G B tuple"]
         ERVEC["edge_rgb_response_vec<br/>Vectorised R G B arrays"]
         IFM["is_fringe_mask<br/>Boolean fringe mask"]
-        DFB["detect_fringe_binary<br/>Pixel-level fringe detection"]
         FW["fringe_width<br/>Total CFW in µm"]
     end
 
     ZMX --> CHL & RORI & FAN & FFT & GEOM & BAKE
     BAKE --> APPLY
     CSV --> SD
-    SD --> ER & APPLY
-    CHL & RORI --> ER
-    ER --> ERGB --> DFB
-    ER --> ERVEC --> IFM --> FW
+    SD --> ERVEC & APPLY
+    CHL & RORI --> ERVEC
+    ERVEC --> IFM --> FW
 ```
 
 ### 4.2 Experimental Workflows (Notebook Perspective)
@@ -224,17 +220,14 @@ Per-defocus ESF diagnostic (Section 6, Geom Fast 16-node)
 
 ### 5.1 `chromf/__init__.py` — Public API
 
-`src/chromf/__init__.py` is the sole external-facing interface layer, exporting 15 functions:
+`src/chromf/__init__.py` is the sole external-facing interface layer, exporting 12 functions:
 
 #### CFW Core Functions (from `cfw.py`)
 
 ```python
 from chromf import (
     fringe_width,            # Total colour fringe width in µm at a given defocus
-    edge_response,           # Single-channel ESF value at (x, z)
-    edge_rgb_response,       # R, G, B ESF tuple at (x, z) [scalar x]
     edge_rgb_response_vec,   # R, G, B ESF arrays at (x_arr, z) [vectorised]
-    detect_fringe_binary,    # 1 if pixel is colour-fringed, else 0
     is_fringe_mask,          # Boolean mask of visible fringe pixels (all 3 conditions)
     load_sensor_response,    # Build R/G/B spectral-weight dict for a camera model
 )
@@ -355,16 +348,14 @@ def load_sensor_response(model: str = "sonya900") -> dict[str, np.ndarray]:
 | `_exposure_curve(x, slope)` | 78–80 | `tanh` tone curve, mapped to [0,1] |
 | `_disc_esf(x, rho)` | 84–92 | Uniform disc (Pillbox) ESF |
 | `_gauss_esf(x, rho)` | 96–100 | Gaussian PSF ESF (σ ≈ 0.5ρ) |
-| `_edge_response_jit(x, z, ...)` | 105–131 | Disc/Gaussian single-channel integration kernel |
-| `_edge_response_vec_jit(x_arr, z, ...)` | 134–165 | Vectorised variant: processes an array of x values in one Numba call |
+| `_edge_response_vec_jit(x_arr, z, ...)` | 103–135 | Vectorised edge-response kernel: processes an array of x values in one Numba call |
 
 #### Public API
 
 ```python
-def edge_response(
-    channel: Literal["R", "G", "B"],
-    x_um: float,         # Position coordinate (µm)
-    z_um: float,         # Defocus (µm)
+def edge_rgb_response_vec(
+    x_arr: np.ndarray,       # 1-D array of x positions (µm)
+    z_um: float,             # Defocus (µm)
     *,
     exposure_slope: float | None = None,   # Default EXPOSURE_SLOPE=8.0
     gamma: float | None = None,            # Default DISPLAY_GAMMA=1.8
@@ -373,18 +364,6 @@ def edge_response(
     f_number: float = DEFAULT_FNUMBER,
     psf_mode: Literal["disc", "gauss"] = "gauss",
     sensor_response: dict[str, np.ndarray] | None = None,  # Default Sony A900
-) -> float  # Return value ∈ [0, 1], tone-mapped ESF value
-```
-
-```python
-def edge_rgb_response(
-    x_um: float, z_um: float, *, ...  # Same as edge_response
-) -> tuple[float, float, float]       # (R, G, B) ESF tuple
-```
-
-```python
-def edge_rgb_response_vec(
-    x_arr: np.ndarray, z_um: float, *, ...  # Same as edge_response
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]  # (R, G, B) ESF arrays
 # Vectorised: dispatches to Numba only 3 times (once per channel)
 # regardless of array length, eliminating Python-loop overhead
@@ -404,20 +383,11 @@ def is_fringe_mask(
 ```
 
 ```python
-def detect_fringe_binary(
-    x_um: float, z_um: float,
-    *,
-    color_diff_threshold: float | None = None,  # Default 0.2
-    ...  # Same as edge_response
-) -> int  # 1 = fringed, 0 = not fringed
-```
-
-```python
 def fringe_width(
     z_um: float,
     *,
     xrange_val: int | None = None,   # Default EDGE_HALF_WINDOW_PX=400
-    ...  # Same as edge_response
+    ...  # Same as edge_rgb_response_vec
 ) -> int  # Total CFW in µm (outer-boundary method)
 # Scans x ∈ [-400, 400] µm, uses edge_rgb_response_vec + is_fringe_mask
 # CFW = distance from first fringed pixel to last fringed pixel
@@ -980,7 +950,7 @@ def fringe_width(z_um, *, ...):
     fringed = is_fringe_mask(r, g, b, diff_threshold=thr)
     return _cfw_from_mask(fringed)   # outer boundary: last − first + 1
 
-def _cfw_from_mask(fringed, gap_fill=5):
+def _cfw_from_mask(fringed):
     indices = np.flatnonzero(fringed)
     if indices.size == 0:
         return 0
@@ -1286,4 +1256,4 @@ Loaded via Optiland `fileio.load_zemax_file()`, returning an `Optic` object supp
 
 ---
 
-*Report based on the ChromFringe codebase, updated: 2026-03-14.*
+*Report based on the ChromFringe codebase, updated: 2026-03-15.*

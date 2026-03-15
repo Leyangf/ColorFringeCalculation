@@ -11,7 +11,7 @@ from math import erf as _erf, fabs as _fabs, sqrt as _sqrt
 from typing import Literal
 
 import numpy as np
-from numba import njit  # used by _edge_response_jit
+from numba import njit
 
 # ------------------------------------------------------------------------
 # Package-local imports (works both as top-level "cfw" and as "chromf.cfw")
@@ -101,35 +101,6 @@ def _gauss_esf(x: float, rho: float) -> float:
 
 
 @njit(cache=True)
-def _edge_response_jit(
-    x: float,
-    z: float,
-    slope: float,
-    gamma: float,
-    sensor: np.ndarray,
-    chl_curve: np.ndarray,
-    f_number: float,
-    psf_kind: Literal["disc", "gauss"],
-    sa_curve: np.ndarray,  # residual spot radius per wavelength (µm); zeros = no SA
-) -> float:
-    denom = _sqrt(4.0 * f_number**2.0 - 1.0)
-    acc = 0.0
-    for n in range(chl_curve.size):
-        rho_chl = _fabs((z - chl_curve[n]) / denom)
-        rho = _sqrt(rho_chl**2 + sa_curve[n] ** 2)  # quadrature: defocus ⊕ SA
-        if psf_kind == "disc":
-            weight = _disc_esf(x, rho)
-        else:
-            weight = _gauss_esf(x, rho)
-        acc += sensor[n] * weight
-    norm = np.sum(sensor)
-    if norm == 0.0:
-        return 0.0
-    linear = acc / norm
-    return _exposure_curve(linear, slope) ** gamma
-
-
-@njit(cache=True)
 def _edge_response_vec_jit(
     x_arr: np.ndarray,
     z: float,
@@ -141,7 +112,7 @@ def _edge_response_vec_jit(
     psf_kind: Literal["disc", "gauss"],
     sa_curve: np.ndarray,
 ) -> np.ndarray:
-    """Vectorised variant of _edge_response_jit: processes an array of x values."""
+    """Vectorised edge-response kernel: processes an array of x values."""
     denom = _sqrt(4.0 * f_number**2 - 1.0)
     norm = 0.0
     for n in range(sensor.size):
@@ -167,80 +138,6 @@ def _edge_response_vec_jit(
 # =============================================================================
 #                               Public API
 # =============================================================================
-def edge_response(
-    channel: Literal["R", "G", "B"],
-    x_um: float,
-    z_um: float,
-    *,
-    exposure_slope: float | None = None,
-    gamma: float | None = None,
-    chl_curve_um: np.ndarray,
-    rho_sa_um: np.ndarray | None = None,
-    f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["disc", "gauss"] = DEFAULT_PSF_MODE,
-    sensor_response: dict[str, np.ndarray] | None = None,
-) -> float:
-    if psf_mode not in ALLOWED_PSF_MODES:
-        raise ValueError(f"psf_mode must be one of {ALLOWED_PSF_MODES}")
-    _sr = SENSOR_RESPONSE if sensor_response is None else sensor_response
-    sensor = _sr[channel.upper()]
-    if sensor.shape[0] != chl_curve_um.shape[0]:
-        raise ValueError(
-            f"Sensor response and CHL curve lengths differ "
-            f"({sensor.shape[0]} vs {chl_curve_um.shape[0]})."
-        )
-
-    slope = EXPOSURE_SLOPE if exposure_slope is None else float(exposure_slope)
-    gamma_val = DISPLAY_GAMMA if gamma is None else float(gamma)
-    chl = chl_curve_um.astype(np.float64, copy=False)
-
-    sa = (
-        np.zeros_like(chl, dtype=np.float64)
-        if rho_sa_um is None
-        else rho_sa_um.astype(np.float64, copy=False)
-    )
-
-    return _edge_response_jit(
-        float(x_um),
-        float(z_um),
-        slope,
-        gamma_val,
-        sensor,
-        chl,
-        float(f_number),
-        psf_mode,
-        sa,  # type: ignore[arg-type]
-    )
-
-
-def edge_rgb_response(
-    x_um: float,
-    z_um: float,
-    *,
-    exposure_slope: float | None = None,
-    gamma: float | None = None,
-    chl_curve_um: np.ndarray,
-    rho_sa_um: np.ndarray | None = None,
-    f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["disc", "gauss"] = DEFAULT_PSF_MODE,
-    sensor_response: dict[str, np.ndarray] | None = None,
-) -> tuple[float, float, float]:
-    kw = dict(
-        exposure_slope=exposure_slope,
-        gamma=gamma,
-        chl_curve_um=chl_curve_um,
-        rho_sa_um=rho_sa_um,
-        f_number=f_number,
-        psf_mode=psf_mode,
-        sensor_response=sensor_response,
-    )
-    return (
-        edge_response("R", x_um, z_um, **kw),  # type: ignore[arg-type]
-        edge_response("G", x_um, z_um, **kw),  # type: ignore[arg-type]
-        edge_response("B", x_um, z_um, **kw),  # type: ignore[arg-type]
-    )
-
-
 def edge_rgb_response_vec(
     x_arr: np.ndarray,
     z_um: float,
@@ -255,8 +152,7 @@ def edge_rgb_response_vec(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Vectorised RGB edge response for an array of x positions.
 
-    Equivalent to calling ``edge_rgb_response`` for each element of *x_arr*
-    but dispatches to Numba only 3 times (once per channel) regardless of
+    Dispatches to Numba only 3 times (once per channel) regardless of
     array length, eliminating Python-loop overhead in ``fringe_width`` and
     ``compute_pair_diffs``.
 
@@ -320,57 +216,12 @@ def is_fringe_mask(
     return cond1 & cond2 & cond3
 
 
-def detect_fringe_binary(
-    x_um: float,
-    z_um: float,
-    *,
-    exposure_slope: float | None = None,
-    gamma: float | None = None,
-    chl_curve_um: np.ndarray,
-    rho_sa_um: np.ndarray | None = None,
-    f_number: float = DEFAULT_FNUMBER,
-    psf_mode: Literal["disc", "gauss"] = DEFAULT_PSF_MODE,
-    color_diff_threshold: float | None = None,
-    sensor_response: dict[str, np.ndarray] | None = None,
-) -> int:
-    threshold = (
-        COLOR_DIFF_THRESHOLD if color_diff_threshold is None else color_diff_threshold
-    )
-    r, g, b = edge_rgb_response(
-        x_um,
-        z_um,
-        exposure_slope=exposure_slope,
-        gamma=gamma,
-        chl_curve_um=chl_curve_um,
-        rho_sa_um=rho_sa_um,
-        f_number=f_number,
-        psf_mode=psf_mode,
-        sensor_response=sensor_response,
-    )
-    return int(
-        bool(
-            is_fringe_mask(
-                np.asarray(r),
-                np.asarray(g),
-                np.asarray(b),
-                diff_threshold=threshold,
-            )
-        )
-    )
-
-
-def _cfw_from_mask(fringed: np.ndarray, gap_fill: int = 5) -> int:
+def _cfw_from_mask(fringed: np.ndarray) -> int:
     """Compute colour-fringe width (in pixels) from a boolean fringe mask.
 
     Uses the outer-boundary method: CFW is the distance from the first
     fringed pixel to the last fringed pixel.  This is robust against
     threshold jitter that creates small internal gaps in the mask.
-
-    Parameters
-    ----------
-    fringed : 1-D boolean array
-    gap_fill : int
-        Kept for API compatibility but no longer used.
     """
     indices = np.flatnonzero(fringed)
     if indices.size == 0:
@@ -389,7 +240,6 @@ def fringe_width(
     psf_mode: Literal["disc", "gauss"] = DEFAULT_PSF_MODE,
     xrange_val: int | None = None,
     color_diff_threshold: float | None = None,
-    gap_fill: int = 5,
     sensor_response: dict[str, np.ndarray] | None = None,
 ) -> int:
     half = EDGE_HALF_WINDOW_PX if xrange_val is None else int(xrange_val)

@@ -9,7 +9,6 @@ that is drop-in compatible with ``spectrum_loader._load_defocus()``.
 from __future__ import annotations
 
 import copy
-import warnings
 
 import numpy as np
 from chromf.spectrum_loader import channel_products as _channel_products
