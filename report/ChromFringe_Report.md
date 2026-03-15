@@ -110,15 +110,15 @@ ChromFringe/
 
 ```mermaid
 graph TD
-    ZMX["data/lens/\nNikonAINikkor85mmf2S.zmx"]
-    CSV["data/raw/\nSpectral CSV files\n(D65 + multi-camera QE)"]
-    SL["spectrum_loader.py\nchannel_products(sensor_model=...)"]
-    OB["optiland_bridge.py\nAberration extraction + ESF\n+ bake/apply two-stage"]
-    CFW["cfw.py\nJIT ESF core\n+ load_sensor_response()"]
-    INIT["__init__.py\nPublic API (15 functions)"]
-    NB1["cfw_fftpsf_demo.ipynb\nFFT Ground Truth"]
-    NB2["cfw_geom_demo.ipynb\nGeometric/Analytic Models"]
-    OPT["optiland\n(third-party)"]
+    ZMX["data/lens/<br/>NikonAINikkor85mmf2S.zmx"]
+    CSV["data/raw/<br/>Spectral CSV files<br/>(D65 + multi-camera QE)"]
+    SL["spectrum_loader.py<br/>channel_products(sensor_model=...)"]
+    OB["optiland_bridge.py<br/>Aberration extraction + ESF<br/>+ bake/apply two-stage"]
+    CFW["cfw.py<br/>JIT ESF core<br/>+ load_sensor_response()"]
+    INIT["__init__.py<br/>Public API (15 functions)"]
+    NB1["cfw_fftpsf_demo.ipynb<br/>FFT Ground Truth"]
+    NB2["cfw_geom_demo.ipynb<br/>Geometric/Analytic Models"]
+    OPT["optiland<br/>(third-party)"]
 
     CSV --> SL
     ZMX --> OPT
@@ -158,31 +158,31 @@ chromf/__init__.py
 ```mermaid
 flowchart LR
     subgraph Data Input
-        ZMX[Zemax ZMX\nLens Prescription]
-        CSV[Spectral CSV\nD65 + RGB QE]
+        ZMX["Zemax ZMX<br/>Lens Prescription"]
+        CSV["Spectral CSV<br/>D65 + RGB QE"]
     end
 
     subgraph optiland_bridge
-        CHL[compute_chl_curve\nParaxial CHL λ→µm]
-        RORI[compute_rori_spot_curves\nRoRi CHL + ρ_sa]
-        FAN[precompute_ray_fan\n32×31 TA₀ + slope]
-        FFT[compute_polychromatic_esf\nFFT diffraction ESF]
-        GEOM[compute_polychromatic_esf_geom\nRay-fan extrapolation ESF]
-        BAKE["bake_wavelength_esfs\nMonochromatic ESF baking\n(sensor-independent)"]
-        APPLY["apply_sensor_weights\nApply spectral weights\n(microseconds)"]
+        CHL["compute_chl_curve<br/>Paraxial CHL λ→µm"]
+        RORI["compute_rori_spot_curves<br/>RoRi CHL + ρ_sa"]
+        FAN["precompute_ray_fan<br/>32×31 TA₀ + slope"]
+        FFT["compute_polychromatic_esf<br/>FFT diffraction ESF"]
+        GEOM["compute_polychromatic_esf_geom<br/>Ray-fan extrapolation ESF"]
+        BAKE["bake_wavelength_esfs<br/>Monochromatic ESF baking<br/>(sensor-independent)"]
+        APPLY["apply_sensor_weights<br/>Apply spectral weights<br/>(microseconds)"]
     end
 
     subgraph spectrum_loader
-        SD[channel_products\nNormalised S·D products]
+        SD["channel_products<br/>Normalised S·D products"]
     end
 
     subgraph cfw
-        ER[edge_response\nSingle-channel ESF value]
-        ERGB[edge_rgb_response\nR G B tuple]
-        ERVEC[edge_rgb_response_vec\nVectorised R G B arrays]
-        IFM[is_fringe_mask\nBoolean fringe mask]
-        DFB[detect_fringe_binary\nPixel-level fringe detection]
-        FW[fringe_width\nTotal CFW in µm]
+        ER["edge_response<br/>Single-channel ESF value"]
+        ERGB["edge_rgb_response<br/>R G B tuple"]
+        ERVEC["edge_rgb_response_vec<br/>Vectorised R G B arrays"]
+        IFM["is_fringe_mask<br/>Boolean fringe mask"]
+        DFB["detect_fringe_binary<br/>Pixel-level fringe detection"]
+        FW["fringe_width<br/>Total CFW in µm"]
     end
 
     ZMX --> CHL & RORI & FAN & FFT & GEOM & BAKE
