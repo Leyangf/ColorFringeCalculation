@@ -88,7 +88,7 @@ Aberration curves extracted per wavelength:
 - RoRi CHL (energy-weighted best focus, includes spherochromatism)
 - Residual SA spot radius ρ_SA(λ)
 
-**PSF models:** Disc (pillbox) · Gaussian · Geometric Fast (ray-fan with Gauss-Legendre pupil integration).
+**PSF models:** Disc (uniform circular) · Gaussian · Geometric Fast (ray-fan with Gauss-Legendre pupil integration).
 
 ### `cfw_fftpsf_demo.ipynb` — FFT Diffraction Validation
 
@@ -118,7 +118,7 @@ Numba JIT-compiled inner loops for CFW computation.
 
 All functions accept `chl_curve_um`, `rho_sa_um`, `f_number`, `psf_mode`, `exposure_slope`, `gamma`, and `sensor_response` as keyword arguments.
 
-**PSF modes (analytic):** `"disc"` (Pillbox), `"gauss"` (Gaussian). For ray-fan based geometric ESF, use `compute_polychromatic_esf_geom` in `optiland_bridge.py`.
+**PSF modes (analytic):** `"disc"` (uniform circular disc), `"gauss"` (Gaussian). For ray-fan based geometric ESF, use `compute_polychromatic_esf_geom` in `optiland_bridge.py`.
 
 ### `spectrum_loader.py` — Spectral Data
 

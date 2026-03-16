@@ -7,7 +7,7 @@ longitudinal chromatic aberration (LCA).
 """
 
 from __future__ import annotations
-from math import erf as _erf, fabs as _fabs, sqrt as _sqrt
+from math import asin as _asin, erf as _erf, fabs as _fabs, pi as _pi, sqrt as _sqrt
 from typing import Literal
 
 import numpy as np
@@ -82,14 +82,21 @@ def _exposure_curve(x: float, slope: float) -> float:
 
 @njit(cache=True)
 def _disc_esf(x: float, rho: float) -> float:
-    """Edge-spread function for a disc (uniform pillbox) PSF."""
+    """Edge-spread function for a uniform circular-disc PSF.
+
+    The LSF of a uniform disk of radius *rho* is semicircular:
+        LSF(x) = (2 / pi rho^2) sqrt(rho^2 - x^2)
+    Integrating gives the analytic ESF:
+        ESF(x) = 1/2 + [arcsin(t) + t sqrt(1 - t^2)] / pi,  t = x/rho
+    """
     if rho < 1e-6:
         return 1.0 if x >= 0.0 else 0.0
     if x >= rho:
         return 1.0
     if x <= -rho:
         return 0.0
-    return 0.5 * (1.0 + x / rho)
+    t = x / rho
+    return 0.5 + (_asin(t) + t * _sqrt(1.0 - t * t)) / _pi
 
 
 @njit(cache=True)
