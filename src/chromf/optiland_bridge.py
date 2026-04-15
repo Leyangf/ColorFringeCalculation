@@ -188,6 +188,14 @@ def compute_rori_spot_curves(
 _CHANNEL_MAP = {"R": "red", "G": "green", "B": "blue"}
 
 
+def _validate_wl_stride(wl_stride: int) -> int:
+    """Return a validated positive wavelength stride."""
+    stride = int(wl_stride)
+    if stride < 1:
+        raise ValueError("wl_stride must be >= 1")
+    return stride
+
+
 def _optic_at_defocus(optic, z_defocus_um: float):
     """Return a deep copy of optic with image plane shifted by z_defocus_um µm.
 
@@ -417,6 +425,7 @@ def precompute_ray_fan(
     optic,
     num_rho: int = 32,
     sensor_model: str = "sonya900",
+    wl_stride: int = 1,
 ) -> dict:
     """Pre-compute signed transverse aberrations and ray slopes at z = 0.
 
@@ -429,8 +438,9 @@ def precompute_ray_fan(
     where TA₀ is the signed transverse aberration (µm) and M/N is the
     direction-cosine ratio (µm/µm ≡ dimensionless).
 
-    All 31 wavelengths (400–700 nm, 10 nm step) are traced; per-channel
-    spectral weights are stored separately so a single fan covers R, G, B.
+    The traced wavelength grid can be subsampled via ``wl_stride``. Per-channel
+    spectral weights are stored on that baked grid so a single fan covers
+    R, G, B without re-tracing.
 
     Pass the returned dict to :func:`compute_polychromatic_esf_geom` to
     evaluate ESFs at any z without further ray tracing.
@@ -441,16 +451,21 @@ def precompute_ray_fan(
         Optiland ``Optic`` instance at the nominal (z = 0) image plane.
     num_rho:
         Gauss-Legendre pupil quadrature points (default 32).
+    wl_stride:
+        Wavelength subsampling stride applied during baking
+        (default 1 = all 31 wavelengths, 3 = every 3rd wavelength).
 
     Returns
     -------
     dict with keys:
         ``fno``, ``rho_nodes`` (K,), ``W_gl`` (K,), ``wl_nm`` (N_wl,),
-        ``TA0`` (K, N_wl) µm, ``slope`` (K, N_wl) µm/µm;
+        ``TA0`` (K, N_wl) µm, ``slope`` (K, N_wl) µm/µm,
+        ``wl_stride`` (int, bake stride);
         plus ``"R"``, ``"G"``, ``"B"`` sub-dicts with ``g_norm`` (N_wl,).
     """
+    wl_stride = _validate_wl_stride(wl_stride)
     products = _channel_products(sensor_model=sensor_model)
-    wl_nm_all = products["red"][:, 0]   # all channels share this 400–700 nm grid
+    wl_nm_all = products["red"][:, 0][::wl_stride]   # all channels share this grid
     N_wl = len(wl_nm_all)
 
     xi, W_gl = np.polynomial.legendre.leggauss(num_rho)
@@ -476,9 +491,10 @@ def precompute_ray_fan(
         "wl_nm":     wl_nm_all,
         "TA0":       TA0_all,
         "slope":     slope_all,
+        "wl_stride": wl_stride,
     }
     for ch_name, ch_key in _CHANNEL_MAP.items():
-        g_k = products[ch_key][:, 1]
+        g_k = products[ch_key][:, 1][::wl_stride]
         fan[ch_name] = {"g_norm": g_k / g_k.sum()}
     return fan
 
@@ -515,12 +531,14 @@ def compute_polychromatic_esf_geom(
     x_um:
         Physical x-axis in µm.
     wl_stride:
-        Wavelength subsampling stride (default 1 = all 31 wavelengths).
+        Additional wavelength subsampling stride applied on top of the baked
+        ray fan grid (default 1 = use the baked grid as-is).
 
     Returns
     -------
     np.ndarray, shape == x_um.shape, values in [0, 1].
     """
+    wl_stride = _validate_wl_stride(wl_stride)
     rho_nodes = ray_fan["rho_nodes"]            # (K,)
     W_gl      = ray_fan["W_gl"]                 # (K,)
     g_norm_full = ray_fan[channel.upper()]["g_norm"]   # (N_wl,)
