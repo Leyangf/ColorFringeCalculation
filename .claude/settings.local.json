@@ -7,7 +7,8 @@
       "Bash(find c:MasterthesisChromFringe -name *optim* -o -name *merit*)",
       "Bash(pip install:*)",
       "Bash(python3:*)",
-      "Bash(find /c/Masterthesis/ChromFringe -type d -name report*)"
+      "Bash(find /c/Masterthesis/ChromFringe -type d -name report*)",
+      "Bash(python -c \"import optiland; import os; print\\(os.path.dirname\\(optiland.__file__\\)\\)\")"
     ]
   }
 }
