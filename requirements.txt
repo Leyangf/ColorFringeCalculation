@@ -1,3 +1,0 @@
-ipykernel
-python-dotenv
-comtypes

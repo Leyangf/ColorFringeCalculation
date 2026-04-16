@@ -89,6 +89,13 @@ target/
 # Exclude virtual environment
 .venv/
 
+# uv
+# (uv.lock is tracked; ignore only transient caches)
+.uv/
+
+# Claude Code local settings (user/machine-specific)
+.claude/settings.local.json
+
 # Exclude trained models
 /models/
 

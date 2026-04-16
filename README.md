@@ -30,22 +30,27 @@ ChromFringe/
 
 ## Installation
 
-> **Platform note:** `environment.yml` was exported on Windows and pins Windows-specific runtime packages (`ucrt`, `vc14_runtime`, etc.). It is intended for Windows + Anaconda. Linux / macOS users should install dependencies manually.
+This project uses [uv](https://docs.astral.sh/uv/) for environment and dependency management. Install uv first (`pipx install uv` or see the uv docs), then:
 
 ```bash
 git clone https://github.com/Leyangf/ChromFringe.git
 cd ChromFringe
-conda env create -f environment.yml
-conda activate chromfringe
+uv sync
 ```
 
-This installs all pinned dependencies (Python 3.13, NumPy 2.2, Numba 0.61), the `chromf` package in editable mode, and [Optiland](https://github.com/HarrisonKramer/optiland).
+`uv sync` creates `.venv/`, installs all locked dependencies (Python 3.13, NumPy 2.2+, Numba 0.61+, [Optiland](https://github.com/HarrisonKramer/optiland)), and installs the `chromf` package in editable mode.
 
-**Minimal pip install** (if not using Conda):
+Run commands in the project environment with `uv run`:
 
 ```bash
-pip install numpy scipy numba pandas matplotlib ipywidgets optiland
-pip install -e .
+uv run python -c "import chromf"
+uv run jupyter lab
+```
+
+To use the notebooks in VS Code or a standalone Jupyter, register the venv as a kernel:
+
+```bash
+uv run python -m ipykernel install --user --name chromfringe-uv --display-name "ChromFringe (uv)"
 ```
 
 ## Quick Start
@@ -174,7 +179,7 @@ Default thresholds: $\delta_\text{low} = 0.15$, $\delta = 0.15$, $\delta_\text{h
 | ipywidgets | Interactive sliders in notebooks |
 | Optiland | Lens prescription and ray tracing |
 
-See `environment.yml` for the full pinned environment (Python 3.13, NumPy 2.2, Numba 0.61).
+See [`pyproject.toml`](pyproject.toml) for declared dependencies and [`uv.lock`](uv.lock) for the full pinned environment (Python 3.13, NumPy 2.2+, Numba 0.61+).
 
 ## License
 
