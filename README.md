@@ -2,6 +2,10 @@
 
 A research toolkit for predicting **chromatic colour fringing** in photographic lenses. Given a lens prescription (Zemax ZMX), ChromFringe models how residual longitudinal chromatic aberration (CHL) and spherical aberration (SA) produce visible colour fringes at high-contrast edges, and reports a **Colour Fringe Width (CFW)** metric in µm.
 
+## Motivation
+
+Achromatic lenses still exhibit residual secondary spectrum: different wavelengths focus at slightly different axial positions. Near a sharp edge, R/G/B channels blur by different amounts, producing a visible colour fringe. ChromFringe provides a hierarchy of ESF (Edge Spread Function) models — from sub-microsecond analytic kernels to full FFT diffraction ground truth — together with tools to extract the required aberration data from an Optiland lens model.
+
 ## Installation
 
 Requires [uv](https://docs.astral.sh/uv/):
@@ -11,6 +15,8 @@ git clone https://github.com/Leyangf/ChromFringe.git
 cd ChromFringe
 uv sync
 ```
+
+`uv sync` creates `.venv/` and installs all locked dependencies (Python 3.13, NumPy, Numba, [Optiland](https://github.com/HarrisonKramer/optiland)) with `chromf` in editable mode. Run commands with `uv run` (e.g. `uv run jupyter lab`).
 
 ## Quick Start
 
@@ -31,29 +37,33 @@ cfw = chromf.fringe_width(
 print(f"CFW = {cfw} µm")
 ```
 
+## Repository Layout
+
+```
+ChromFringe/
+├── data/
+│   ├── raw/      ← Spectral CSVs (D65 illuminant, per-camera sensor QE)
+│   └── lens/     ← Lens prescriptions (ZMX)
+├── examples/     ← Research notebooks
+└── src/chromf/
+    ├── cfw.py              ← Numba-JIT CFW kernels
+    ├── spectrum_loader.py  ← Spectral data loading & normalisation
+    └── optiland_bridge.py  ← Aberration extraction & ESF computation
+```
+
 ## Notebooks
 
-- [`examples/cfw_geom_demo.ipynb`](examples/cfw_geom_demo.ipynb) — interactive geometric/analytic PSF analysis with sliders for defocus, PSF model, and SA toggle.
-- [`examples/cfw_fftpsf_demo.ipynb`](examples/cfw_fftpsf_demo.ipynb) — FFT diffraction ground truth for validation.
+- [`examples/cfw_geom_demo.ipynb`](examples/cfw_geom_demo.ipynb) — interactive geometric/analytic PSF analysis with sliders for defocus, PSF model, and SA toggle. Includes diagnostic plots (CHL curves, SA vs CHL budget) and controlled-variable comparisons.
+- [`examples/cfw_fftpsf_demo.ipynb`](examples/cfw_fftpsf_demo.ipynb) — FFT Fraunhofer diffraction ground truth. Uses two-stage baking (monochromatic ESF grid + per-sensor weighting) for efficient multi-camera sweeps.
 
 ## Modelling Hierarchy
 
-| Level | Method | Speed |
-|-------|--------|-------|
-| 0 | FFT diffraction PSF | ~1 s/ESF |
-| 1 | Geometric ray-fan ESF | <1 ms/ESF |
-| 2 | Analytic (Disc / Gaussian) | <0.01 ms/ESF |
+| Level | Method | Speed | Notes |
+|-------|--------|-------|-------|
+| 0 | FFT diffraction PSF | ~1 s/ESF | Includes diffraction, ground truth |
+| 1 | Geometric ray-fan ESF | <1 ms/ESF | Geometrically exact, linear z-extrapolation |
+| — | Analytic (Disc / Gaussian) | <0.01 ms/ESF | Diagnostic only — parametric sanity check, not a predictive model |
 
-## CFW Definition
+**Aberration curves** extracted per wavelength: paraxial CHL (marginal-ray trace), RoRi CHL (energy-weighted best focus, includes spherochromatism), and residual SA spot radius ρ_SA(λ).
 
-A pixel is fringed if all three hold simultaneously:
-
-1. $\min(I_R, I_G, I_B) > 0.15$ (lower brightness)
-2. $\max_\text{pair}|I_i - I_j| > 0.15$ (inter-channel difference)
-3. $\min(I_R, I_G, I_B) < 0.80$ (upper brightness)
-
-CFW is the spatial extent (µm) of the contiguous region where all three hold.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+**Sensor support:** bundled models are Nikon D700 (`nikond700`) and Sony A900 (`sonya900`). Add a camera by placing `sensor_{model}_{red,green,blue}.csv` files in `data/raw/` and passing the model name.
