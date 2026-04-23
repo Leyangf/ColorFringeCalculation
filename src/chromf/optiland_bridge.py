@@ -41,7 +41,7 @@ def _paraxial_bfl(paraxial, wl_nm: float, z_start: float) -> float:
     Raises ValueError if the marginal-ray slope is zero (degenerate optic).
     """
     wl_um = wl_nm / 1000.0
-    y, u = paraxial._trace_generic(1.0, 0.0, z_start, wl_um)
+    y, u = paraxial.trace_generic(1.0, 0.0, z_start, wl_um)
     u_last = float(u.ravel()[-1])
     if u_last == 0.0:
         raise ValueError(
