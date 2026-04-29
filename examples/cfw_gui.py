@@ -62,11 +62,18 @@ CFW_SWEEP_STEP       = 10       # coarser grid for the CFW(z) curve (geom mode i
 GAMMA_DEFAULT        = 1.8
 EXPOSURE_DEFAULT     = 4.0
 COLOR_DIFF_THRESHOLD = 0.15
-XRANGE               = 400
+XRANGE               = 300
 X_RES                = 1
 IMG_HEIGHT           = 60
 NUM_RHO_DEFAULT      = 32
 RF_NODES_LIST        = (8, 16, 32, 64)
+
+# Canonical wavelength grid for all lens-dependent baking (CHL, RoRi, SA spot,
+# ray-fan TA0/slope).  Matches the 400–700 nm @ 10 nm grid used by every
+# bundled sensor CSV, so swapping sensor/illuminant never forces a re-trace —
+# only the per-channel g_norm weights and resampled sensor_response need to
+# refresh.
+BAKE_WL_NM = np.arange(400.0, 701.0, 10.0)
 
 
 # ── Discovery helpers ─────────────────────────────────────────────────────
@@ -110,28 +117,35 @@ def load_default_lens():
 # ── Spectral / ray-fan helpers ────────────────────────────────────────────
 
 def build_sensor_response(sensor_model: str, daylight_src: str) -> tuple[dict, np.ndarray]:
+    """Channel products resampled onto the canonical ``BAKE_WL_NM`` grid.
+
+    Resampling here decouples ``_sensor_response`` from the sensor's native
+    CSV grid, so swapping sensor or illuminant never invalidates the cached
+    lens-dependent curves (CHL, SA, ray fan TA0/slope).
+    """
     prods = channel_products(daylight_src=daylight_src, sensor_model=sensor_model)
-    sr = {
-        "R": prods["red"][:, 1],
-        "G": prods["green"][:, 1],
-        "B": prods["blue"][:, 1],
-    }
-    return sr, prods["blue"][:, 0]
+    wl_native = prods["red"][:, 0]
+    sr: dict[str, np.ndarray] = {}
+    for ch_key, ch_name in (("red", "R"), ("green", "G"), ("blue", "B")):
+        y = prods[ch_key][:, 1]
+        if wl_native.size == BAKE_WL_NM.size and np.allclose(wl_native, BAKE_WL_NM):
+            sr[ch_name] = y
+        else:
+            sr[ch_name] = np.interp(BAKE_WL_NM, wl_native, y)
+    return sr, BAKE_WL_NM.copy()
 
 
 def patch_ray_fan_illumination(ray_fan: dict, sensor_model: str, daylight_src: str) -> dict:
-    """Re-weight the ray fan's per-channel ``g_norm`` for a non-D65 illuminant.
+    """Re-weight the ray fan's per-channel ``g_norm`` for the current sensor + illuminant.
 
-    ``precompute_ray_fan`` always bakes weights against D65; this overwrites
-    them in-place using the chosen illuminant.  TA0/slope are unaffected.
+    Pulls fresh channel products and resamples onto the fan's baked
+    ``wl_nm`` grid.  TA0/slope are lens-only and untouched.
     """
-    if daylight_src == "d65":
-        return ray_fan
     prods = channel_products(daylight_src=daylight_src, sensor_model=sensor_model)
     full_wl = prods["red"][:, 0]
-    idx = np.searchsorted(full_wl, ray_fan["wl_nm"])
+    target_wl = ray_fan["wl_nm"]
     for ch_name, ch_key in (("R", "red"), ("G", "green"), ("B", "blue")):
-        g_k = prods[ch_key][:, 1][idx]
+        g_k = np.interp(target_wl, full_wl, prods[ch_key][:, 1])
         ray_fan[ch_name]["g_norm"] = g_k / g_k.sum()
     return ray_fan
 
@@ -282,12 +296,8 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         self.lens_label = QtWidgets.QLabel("(none loaded)")
         self.lens_label.setWordWrap(True)
         gv.addWidget(self.lens_label)
-        bh = QtWidgets.QHBoxLayout()
-        self.btn_default_lens = QtWidgets.QPushButton("Load Nikkor 85mm")
-        self.btn_load_zmx     = QtWidgets.QPushButton("Load Zemax…")
-        bh.addWidget(self.btn_default_lens)
-        bh.addWidget(self.btn_load_zmx)
-        gv.addLayout(bh)
+        self.btn_load_zmx = QtWidgets.QPushButton("Load Zemax…")
+        gv.addWidget(self.btn_load_zmx)
         self.lens_summary = QtWidgets.QLabel("FNO = —, f = —")
         gv.addWidget(self.lens_summary)
         cl.addWidget(gb_lens)
@@ -348,7 +358,6 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         outer.addLayout(right, 1)
 
         # ── Wiring ──────────────────────────────────────────────────
-        self.btn_default_lens.clicked.connect(self._action_default_lens)
         self.btn_load_zmx.clicked.connect(self._action_load_zmx)
         self.cb_sensor.currentIndexChanged.connect(self._on_spectral_changed)
         self.cb_illum.currentIndexChanged.connect(self._on_spectral_changed)
@@ -416,17 +425,18 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
 
     # ── Recompute pipeline ──────────────────────────────────────────────
     def _on_spectral_changed(self):
+        """Cheap path: re-weight only.  No re-trace, no lens-curve recompute."""
         if self._lens is None:
             return
-        with self._busy("Recomputing spectral data…"):
+        with self._busy("Re-weighting spectral channels…"):
             self._recompute_spectral()
-            # Re-derive lens curves if the wavelength grid changed
-            self._paraxial_curve = compute_chl_curve(self._lens, wavelengths_nm=self._sensor_wl)
-            self._rori_curve, self._spot_curve = compute_rori_spot_curves(
-                self._lens, wavelengths_nm=self._sensor_wl
-            )
-            self._ray_fans.clear()
-            self._refresh_plot()
+            sensor = self.cb_sensor.currentText()
+            illum  = self.cb_illum.currentText()
+            for rf in self._ray_fans.values():
+                patch_ray_fan_illumination(rf, sensor, illum)
+            # CFW(z) values depend on spectral weights — invalidate the sweep.
+            self._cfw_sig = None
+        self._refresh_plot()
 
     def _after_lens_changed(self):
         with self._busy("Computing aberration curves…"):
@@ -434,9 +444,9 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
             f2 = float(self._lens.paraxial.f2())
             self.lens_summary.setText(f"FNO = {self._fno:.2f},  f = {f2:.1f} mm")
             self._recompute_spectral()
-            self._paraxial_curve = compute_chl_curve(self._lens, wavelengths_nm=self._sensor_wl)
+            self._paraxial_curve = compute_chl_curve(self._lens, wavelengths_nm=BAKE_WL_NM)
             self._rori_curve, self._spot_curve = compute_rori_spot_curves(
-                self._lens, wavelengths_nm=self._sensor_wl
+                self._lens, wavelengths_nm=BAKE_WL_NM
             )
             self._ray_fans.clear()
         self._refresh_plot()
