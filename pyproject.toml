@@ -23,6 +23,7 @@ dev = [
     "ipywidgets",
     "python-dotenv",
     'comtypes; sys_platform == "win32"',
+    "pyside6>=6.11.0",
 ]
 
 [tool.setuptools]

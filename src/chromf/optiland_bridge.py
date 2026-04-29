@@ -41,7 +41,7 @@ def _paraxial_bfl(paraxial, wl_nm: float, z_start: float) -> float:
     Raises ValueError if the marginal-ray slope is zero (degenerate optic).
     """
     wl_um = wl_nm / 1000.0
-    y, u = paraxial._trace_generic(1.0, 0.0, z_start, wl_um)
+    y, u = paraxial.trace_generic(1.0, 0.0, z_start, wl_um)
     u_last = float(u.ravel()[-1])
     if u_last == 0.0:
         raise ValueError(
@@ -203,7 +203,7 @@ def _optic_at_defocus(optic, z_defocus_um: float):
     → optic.surfaces[-1].thickness increases by z_defocus_um / 1000 mm.
     """
     op = copy.deepcopy(optic)
-    op.surface_group.surfaces[-1].thickness += z_defocus_um / 1000.0
+    op.surfaces.surfaces[-1].thickness += z_defocus_um / 1000.0
     return op
 
 
