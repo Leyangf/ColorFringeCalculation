@@ -148,7 +148,7 @@ def compute_rori_spot_curves(
         ``[λ_nm, rho_sa_µm]`` — RMS geometric spot radius at best focus.
     """
     wls, ref_wl = _resolve_wl_grid(optic, wavelengths_nm, ref_wavelength_nm)
-    fno      = float(optic.paraxial.FNO())
+    fno      = float(np.asarray(optic.paraxial.FNO()).ravel()[0])
     paraxial = optic.paraxial
     z_start  = float(paraxial.surfaces.positions[1, 0]) - 1.0
 
@@ -470,7 +470,7 @@ def precompute_ray_fan(
 
     xi, W_gl = np.polynomial.legendre.leggauss(num_rho)
     rho_nodes = 0.5 * (xi + 1.0)   # map [−1,1] → [0,1]
-    fno = float(optic.paraxial.FNO())
+    fno = float(np.asarray(optic.paraxial.FNO()).ravel()[0])
 
     TA0_all   = np.empty((num_rho, N_wl))
     slope_all = np.empty((num_rho, N_wl))
