@@ -1,6 +1,8 @@
 # ChromFringe
 
-A research toolkit for predicting **chromatic colour fringing** in photographic lenses. Given a lens prescription (Zemax ZMX), ChromFringe models how residual longitudinal chromatic aberration (CHL) and spherical aberration (SA) produce visible colour fringes at high-contrast edges, and reports a **Colour Fringe Width (CFW)** metric in µm.
+![ChromFringe GUI](examples/CFW_GUI.png)
+
+A research toolkit for predicting **chromatic colour fringing** in photographic lenses. Given a lens prescription (Zemax ZMX), ChromFringe models how second spectrum and monochromatic aberration produce visible colour fringes at high-contrast edges, and reports a **Colour Fringe Width (CFW)** metric in µm.
 
 ## Motivation
 
