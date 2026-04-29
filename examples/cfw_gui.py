@@ -346,6 +346,7 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
 
         # Cached state (lens + curves + ray fans)
         self._lens = None
+        self._lens_for_layout = None
         self._fno: float | None = None
         self._sensor_response: dict | None = None
         self._sensor_wl: np.ndarray | None = None
@@ -460,12 +461,20 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         gly.addWidget(self.canvas_layout)
         cl.addWidget(gb_layout, 1)
 
-        # Sensor channels + illuminant spectra (refreshes on spectral change)
-        gb_sr = QtWidgets.QGroupBox("Sensor Channels & Illuminant")
-        sly = QtWidgets.QVBoxLayout(gb_sr)
+        # Tabbed diagnostics: Sensor/illuminant spectra (spectral change) and
+        # CHL Paraxial vs RoRi comparison (lens change).
+        gb_diag = QtWidgets.QGroupBox("Diagnostics")
+        sly = QtWidgets.QVBoxLayout(gb_diag)
+        self.tabs_diag = QtWidgets.QTabWidget()
+
         self.canvas_sensor = MplCanvas(figsize=(4.2, 1.7), auto_layout=True)
-        sly.addWidget(self.canvas_sensor)
-        cl.addWidget(gb_sr, 1)
+        self.tabs_diag.addTab(self.canvas_sensor, "Sensor & Illuminant")
+
+        self.canvas_chl = MplCanvas(figsize=(4.2, 1.7), auto_layout=True)
+        self.tabs_diag.addTab(self.canvas_chl, "CHL: Paraxial vs RoRi")
+
+        sly.addWidget(self.tabs_diag)
+        cl.addWidget(gb_diag, 1)
 
         outer.addWidget(ctrl, 0)
 
@@ -538,12 +547,21 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
             except Exception as e:
                 self._error("Zemax load failed", e)
                 return
-            # Apply bundled aperture overrides for known files.
+            # Apply bundled aperture overrides for known files.  These match
+            # the lens's measured clear apertures and tighten ray-trace
+            # vignetting — necessary for the CFW physics, but they also
+            # truncate most rays in the diagnostic 2-D layout (which then
+            # looks like "rays don't focus").  Keep an override-free reload
+            # for OpticViewer to draw a clean schematic instead.
             if Path(path).name == "NikonAINikkor85mmf2S.zmx":
+                lens_for_layout = fileio.load_zemax_file(path)
                 for i, r in enumerate(NIKKOR_CLEAR_SEMI_DIAMETERS):
                     if r is not None:
                         lens.surfaces.surfaces[i].aperture = RadialAperture(r_max=r)
+            else:
+                lens_for_layout = lens
             self._lens = lens
+            self._lens_for_layout = lens_for_layout
             self.lens_label.setText(f"Loaded: {Path(path).name}")
             self._after_lens_changed()
 
@@ -580,18 +598,20 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         self._update_bake_status()
         self._redraw_lens_layout()
         self._redraw_sensor_response()
+        self._redraw_chl_comparison()
         self._refresh_plot()
 
     # ── Diagnostic panels (left column bottom) ──────────────────────────
     def _redraw_lens_layout(self):
         fig = self.canvas_layout.fig
         fig.clear()
-        if self._lens is None:
+        lens_to_draw = self._lens_for_layout or self._lens
+        if lens_to_draw is None:
             self.canvas_layout.draw_idle()
             return
         ax = fig.add_subplot(111)
         try:
-            OpticViewer(self._lens).view(
+            OpticViewer(lens_to_draw).view(
                 ax=ax, num_rays=3, fields="all", wavelengths="primary",
                 show_legend=False,
             )
@@ -604,6 +624,30 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         ax.xaxis.label.set_size(7)
         ax.yaxis.label.set_size(7)
         self.canvas_layout.draw_idle()
+
+    def _redraw_chl_comparison(self):
+        """Plot Paraxial CHL and RoRi CHL curves on a single axes."""
+        fig = self.canvas_chl.fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        if self._paraxial_curve is None or self._rori_curve is None:
+            ax.text(0.5, 0.5, "(no lens loaded)", ha="center", va="center",
+                    transform=ax.transAxes, fontsize=11, color="gray")
+            ax.set_axis_off()
+            self.canvas_chl.draw_idle()
+            return
+        ax.plot(self._paraxial_curve[:, 0], self._paraxial_curve[:, 1],
+                color="C0", lw=1.2, label="Paraxial")
+        ax.plot(self._rori_curve[:, 0], self._rori_curve[:, 1],
+                color="C1", lw=1.2, label="RoRi")
+        ax.axhline(0.0, color="gray", lw=0.8, ls=":", alpha=0.5)
+        ax.set_xlabel("λ (nm)", fontsize=8)
+        ax.set_ylabel("CHL (µm)", fontsize=8)
+        ax.set_title("Longitudinal chromatic focal shift", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.grid(True, alpha=0.4)
+        ax.legend(fontsize=7, loc="best")
+        self.canvas_chl.draw_idle()
 
     def _redraw_sensor_response(self):
         """Show raw sensor R/G/B QE curves and the illuminant on one axes."""
@@ -696,6 +740,7 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
             (self.canvas,         "Load a Zemax (.zmx) lens to begin."),
             (self.canvas_layout,  "(no lens loaded)"),
             (self.canvas_sensor,  "(no lens loaded)"),
+            (self.canvas_chl,     "(no lens loaded)"),
         ):
             fig = canvas.fig
             fig.clear()
@@ -914,8 +959,8 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         ax2.set(xlabel="x (µm)", title=f"Pseudo-density (CFW ≈ {cfw} µm)",
                 xlim=(-300, 300), yticks=[])
 
-        # Right column: CFW vs defocus (anchored top-right, spans full height)
-        ax3 = fig.add_subplot(gs[:, 1])
+        # Top-right: CFW vs defocus (single cell — bottom-right left empty)
+        ax3 = fig.add_subplot(gs[0, 1])
         ax3.plot(self._cfw_z, self._cfw_w, lw=1.3, color="C0")
         ax3.axvline(z, color="k", ls="--", lw=1, alpha=0.5)
         ax3.scatter([z], [cfw], color="red", zorder=5, s=32,
