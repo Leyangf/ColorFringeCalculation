@@ -629,7 +629,7 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         # PSF caustic-smoothing factor σ = factor × R_max.  0 = raw geometric
         # caustic (sharp rings, dark centre); 0.25 = heavy diffraction-style
         # smoothing (centre always white, rings soft).  Geom mode only.
-        self.sl_psf_smooth = FloatSlider(0.0, 0.25, 0.05, 0.25)
+        self.sl_psf_smooth = ChoiceSlider([0.0, 0.15, 0.25], 0.25)
         dg.addRow("Defocus z (µm):", self.sl_z)
         dg.addRow("Gamma:",          self.sl_g)
         dg.addRow("Exposure:",       self.sl_e)
@@ -1297,22 +1297,22 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
                               extent[1] - (extent[1] % pitch),
                               extent[2] + (extent[2] % pitch) + 0.0,
                               extent[3] - (extent[3] % pitch))
-            # Per-channel normalisation referenced to the centre pixel (or a
-            # small central patch on the fine grid) so the on-axis point
-            # always saturates to white regardless of caustic spread.
+            # Single global-max normalisation across all three channels —
+            # preserves the R/G/B intensity ratio so PSF colours match the
+            # pseudo-density edge map (per-channel normalisation would let
+            # each channel saturate independently and distort the hue).
             disp = psf_img.copy()
             h, w = disp.shape[:2]
             cy, cx = h // 2, w // 2
-            patch = max(0 if pixelize else 2, min(h, w) // 40)
-            for c in range(3):
-                if patch > 0:
-                    ref = float(disp[cy - patch:cy + patch + 1,
-                                     cx - patch:cx + patch + 1, c].mean())
-                else:
-                    ref = float(disp[cy, cx, c])
-                if ref > 0:
-                    disp[:, :, c] /= ref
-            ax4.imshow(np.clip(disp, 0.0, 1.0), extent=extent,
+            gmax = float(disp.max())
+            if gmax > 0:
+                disp /= gmax
+            # Apply the same tone curve as the edge response for visual
+            # consistency — exposure brightens dim caustic rings, gamma
+            # adjusts contrast of the PSF visualisation.
+            disp = tone_map(np.clip(disp, 0.0, 1.0), exposure, gamma)
+            disp = np.clip(disp, 0.0, 1.0)
+            ax4.imshow(disp, extent=extent,
                        origin="lower",
                        interpolation="nearest" if pixelize else "bilinear")
         except Exception as e:  # noqa: BLE001
