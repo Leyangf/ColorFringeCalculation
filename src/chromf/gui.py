@@ -136,18 +136,24 @@ def load_default_lens():
 
 # ── Spectral / ray-fan helpers ────────────────────────────────────────────
 
-def build_sensor_response(sensor_model: str, daylight_src: str) -> tuple[dict, np.ndarray]:
-    """Channel products resampled onto the canonical ``BAKE_WL_NM`` grid."""
+def build_sensor_response(
+    sensor_model: str,
+    daylight_src: str,
+    target_wl: np.ndarray | None = None,
+) -> tuple[dict, np.ndarray]:
+    """Channel products resampled onto *target_wl* (defaults to BAKE_WL_NM)."""
+    if target_wl is None:
+        target_wl = BAKE_WL_NM
     prods = channel_products(daylight_src=daylight_src, sensor_model=sensor_model)
     wl_native = prods["red"][:, 0]
     sr: dict[str, np.ndarray] = {}
     for ch_key, ch_name in (("red", "R"), ("green", "G"), ("blue", "B")):
         y = prods[ch_key][:, 1]
-        if wl_native.size == BAKE_WL_NM.size and np.allclose(wl_native, BAKE_WL_NM):
+        if wl_native.size == target_wl.size and np.allclose(wl_native, target_wl):
             sr[ch_name] = y
         else:
-            sr[ch_name] = np.interp(BAKE_WL_NM, wl_native, y)
-    return sr, BAKE_WL_NM.copy()
+            sr[ch_name] = np.interp(target_wl, wl_native, y)
+    return sr, np.asarray(target_wl, dtype=float).copy()
 
 
 def patch_ray_fan_illumination(ray_fan: dict, sensor_model: str, daylight_src: str) -> dict:
@@ -343,13 +349,16 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ChromFringe — CFW Interactive Explorer")
-        self.resize(1320, 760)
+        self.resize(1700, 820)
 
         # Cached state (lens + curves + ray fans)
         self._lens = None
         self._lens_for_layout = None
         self._fno: float | None = None
         self._sensor_response: dict | None = None
+        # Wavelength grid the lens curves are baked on — set by lens load /
+        # λ-step change.  Compared against _active_wl_grid() to detect drift.
+        self._curve_wl: np.ndarray | None = None
         self._sensor_wl: np.ndarray | None = None
         self._paraxial_curve: np.ndarray | None = None
         self._rori_curve: np.ndarray | None = None
@@ -361,6 +370,8 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         self._cfw_z: np.ndarray | None = None
         self._cfw_w: np.ndarray | None = None
 
+        # _x_vals is rebuilt from the Sampling spin boxes.  Initialised to
+        # the hardcoded defaults so it exists before the UI is built.
         self._x_vals = np.arange(-XRANGE, XRANGE + X_RES, X_RES, dtype=float)
 
         self._build_ui()
@@ -444,6 +455,52 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         pg.addRow("Status:",    self.lbl_bake_status)
         cl.addWidget(gb_psf)
 
+        # Sampling — wavelength step is a dropdown; defocus + x sampling are
+        # spin boxes.  Changing any of these clears caches but does NOT
+        # auto-rebake the PSF (user must click Bake PSF again).
+        gb_samp = QtWidgets.QGroupBox("Sampling")
+        sg2 = QtWidgets.QFormLayout(gb_samp)
+        self.cb_wl_step = QtWidgets.QComboBox()
+        for s in (10, 20, 30):
+            self.cb_wl_step.addItem(f"{s} nm", s)
+        self.cb_wl_step.setCurrentIndex(0)  # default 10 nm
+
+        self.sb_z_range = QtWidgets.QSpinBox()
+        self.sb_z_range.setRange(50, 5000)
+        self.sb_z_range.setSingleStep(50)
+        self.sb_z_range.setValue(DEFOCUS_RANGE)
+        self.sb_z_range.setSuffix(" µm")
+
+        self.sb_z_step = QtWidgets.QSpinBox()
+        self.sb_z_step.setRange(1, 100)
+        self.sb_z_step.setValue(CFW_SWEEP_STEP)
+        self.sb_z_step.setSuffix(" µm")
+
+        self.sb_x_range = QtWidgets.QSpinBox()
+        self.sb_x_range.setRange(50, 2000)
+        self.sb_x_range.setSingleStep(50)
+        self.sb_x_range.setValue(XRANGE)
+        self.sb_x_range.setSuffix(" µm")
+
+        self.sb_x_step = QtWidgets.QSpinBox()
+        self.sb_x_step.setRange(1, 20)
+        self.sb_x_step.setValue(X_RES)
+        self.sb_x_step.setSuffix(" µm")
+
+        self.btn_clear_cache = QtWidgets.QPushButton("Clear Cache")
+        self.btn_clear_cache.setToolTip(
+            "Clear cached ray fans + CFW(z) sweep.  Use after changing\n"
+            "sampling parameters; then click Bake PSF for geometric mode."
+        )
+
+        sg2.addRow("λ step:",       self.cb_wl_step)
+        sg2.addRow("z range ±:",    self.sb_z_range)
+        sg2.addRow("z step:",       self.sb_z_step)
+        sg2.addRow("x range ±:",    self.sb_x_range)
+        sg2.addRow("x step:",       self.sb_x_step)
+        sg2.addRow("",              self.btn_clear_cache)
+        cl.addWidget(gb_samp)
+
         # Display
         gb_disp = QtWidgets.QGroupBox("Display")
         dg = QtWidgets.QFormLayout(gb_disp)
@@ -454,46 +511,57 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         dg.addRow("Gamma:",          self.sl_g)
         dg.addRow("Exposure:",       self.sl_e)
         cl.addWidget(gb_disp)
+        cl.addStretch(1)
 
-        # Lens 2D layout (static — refreshes only on lens load)
+        outer.addWidget(ctrl, 0)
+
+        # ── Middle: main plot canvas + status ──────────────────────
+        middle = QtWidgets.QVBoxLayout()
+        self.canvas = MplCanvas()
+        middle.addWidget(self.canvas, 1)
+        self.status = QtWidgets.QLabel(" ")
+        self.status.setStyleSheet("font-family: Consolas, monospace; padding: 4px;")
+        middle.addWidget(self.status, 0)
+        outer.addLayout(middle, 1)
+
+        # ── Right: lens layout + tabbed diagnostics ────────────────
+        diag_col = QtWidgets.QWidget()
+        diag_col.setFixedWidth(420)
+        dcl = QtWidgets.QVBoxLayout(diag_col)
+        dcl.setSpacing(8)
+
         gb_layout = QtWidgets.QGroupBox("Lens Layout (2D)")
         gly = QtWidgets.QVBoxLayout(gb_layout)
         self.canvas_layout = MplCanvas(figsize=(4.2, 1.7), auto_layout=True)
         gly.addWidget(self.canvas_layout)
-        cl.addWidget(gb_layout, 1)
+        dcl.addWidget(gb_layout, 1)
 
-        # Tabbed diagnostics: Sensor/illuminant spectra (spectral change) and
-        # CHL Paraxial vs RoRi comparison (lens change).
-        gb_diag = QtWidgets.QGroupBox("Diagnostics")
-        sly = QtWidgets.QVBoxLayout(gb_diag)
-        self.tabs_diag = QtWidgets.QTabWidget()
-
+        gb_sensor = QtWidgets.QGroupBox("Sensor & Illuminant")
+        sly = QtWidgets.QVBoxLayout(gb_sensor)
         self.canvas_sensor = MplCanvas(figsize=(4.2, 1.7), auto_layout=True)
-        self.tabs_diag.addTab(self.canvas_sensor, "Sensor & Illuminant")
+        sly.addWidget(self.canvas_sensor)
+        dcl.addWidget(gb_sensor, 1)
 
+        gb_chl = QtWidgets.QGroupBox("CHL: Paraxial vs RoRi")
+        cly = QtWidgets.QVBoxLayout(gb_chl)
         self.canvas_chl = MplCanvas(figsize=(4.2, 1.7), auto_layout=True)
-        self.tabs_diag.addTab(self.canvas_chl, "CHL: Paraxial vs RoRi")
+        cly.addWidget(self.canvas_chl)
+        dcl.addWidget(gb_chl, 1)
 
-        sly.addWidget(self.tabs_diag)
-        cl.addWidget(gb_diag, 1)
-
-        outer.addWidget(ctrl, 0)
-
-        # ── Right: plot canvas + status ────────────────────────────
-        right = QtWidgets.QVBoxLayout()
-        self.canvas = MplCanvas()
-        right.addWidget(self.canvas, 1)
-        self.status = QtWidgets.QLabel(" ")
-        self.status.setStyleSheet("font-family: Consolas, monospace; padding: 4px;")
-        right.addWidget(self.status, 0)
-        outer.addLayout(right, 1)
+        outer.addWidget(diag_col, 0)
 
         # ── Wiring ──────────────────────────────────────────────────
         self.btn_load_zmx.clicked.connect(self._action_load_zmx)
         self.btn_bake_psf.clicked.connect(self._action_bake_psf)
+        self.btn_clear_cache.clicked.connect(self._action_clear_cache)
         self.cb_sensor.currentIndexChanged.connect(self._on_spectral_changed)
         self.cb_illum.currentIndexChanged.connect(self._on_spectral_changed)
         self.chk_pixelize.toggled.connect(self._refresh_plot)
+        self.cb_wl_step.currentIndexChanged.connect(self._on_wl_step_changed)
+        self.sb_z_range.valueChanged.connect(self._on_z_sampling_changed)
+        self.sb_z_step.valueChanged.connect(self._on_z_sampling_changed)
+        self.sb_x_range.valueChanged.connect(self._on_x_sampling_changed)
+        self.sb_x_step.valueChanged.connect(self._on_x_sampling_changed)
         self.cb_psf.currentIndexChanged.connect(self._update_widget_states)
         self.cb_psf.currentIndexChanged.connect(self._refresh_plot)
         self.cb_nrho.currentIndexChanged.connect(self._refresh_plot)
@@ -566,6 +634,86 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
             self.lens_label.setText(f"Loaded: {Path(path).name}")
             self._after_lens_changed()
 
+    # ── Sampling helpers ────────────────────────────────────────────────
+    def _active_wl_grid(self) -> np.ndarray:
+        """Wavelength bake grid: sensor's CSV range + user-chosen step."""
+        sensor_id = self.cb_sensor.currentData() or "sonya900"
+        try:
+            wl_native = _load_sensor("red", model=sensor_id)[:, 0]
+        except FileNotFoundError:
+            wl_native = BAKE_WL_NM
+        step = float(self.cb_wl_step.currentData())
+        wl_min, wl_max = float(wl_native.min()), float(wl_native.max())
+        return np.arange(wl_min, wl_max + step / 2.0, step, dtype=float)
+
+    def _rebuild_x_vals(self) -> None:
+        x_range = int(self.sb_x_range.value())
+        x_step  = int(self.sb_x_step.value())
+        self._x_vals = np.arange(-x_range, x_range + x_step, x_step, dtype=float)
+
+    def _z_sweep_grid(self) -> np.ndarray:
+        z_range = int(self.sb_z_range.value())
+        z_step  = int(self.sb_z_step.value())
+        return np.arange(-z_range, z_range + z_step, z_step, dtype=float)
+
+    # ── Sampling change handlers ────────────────────────────────────────
+    def _on_wl_step_changed(self):
+        """λ-step change: recompute lens curves on new grid, clear ray fans."""
+        if self._lens is None:
+            return
+        with self._busy("Resampling on new λ grid…"):
+            self._curve_wl = self._active_wl_grid()
+            self._recompute_spectral()
+            self._paraxial_curve = compute_chl_curve(
+                self._lens, wavelengths_nm=self._curve_wl
+            )
+            self._rori_curve, self._spot_curve = compute_rori_spot_curves(
+                self._lens, wavelengths_nm=self._curve_wl
+            )
+            self._ray_fans.clear()
+            self._cfw_sig = None
+        self._update_bake_status()
+        self._redraw_sensor_response()
+        self._redraw_chl_comparison()
+        self._refresh_plot()
+
+    def _on_z_sampling_changed(self):
+        """z range/step change: update slider bounds + invalidate CFW sweep."""
+        z_range = int(self.sb_z_range.value())
+        z_step  = int(self.sb_z_step.value())
+        # Preserve current value if it still fits the new range, else clamp.
+        cur = max(-z_range, min(z_range, self.sl_z.value()))
+        # Rebuild the slider in place.
+        self.sl_z.blockSignals(True)
+        self.sl_z._lo, self.sl_z._hi, self.sl_z._step = (
+            float(-z_range), float(z_range), float(z_step)
+        )
+        n_steps = max(1, int(round((2 * z_range) / z_step)))
+        self.sl_z.slider.blockSignals(True)
+        self.sl_z.slider.setRange(0, n_steps)
+        self.sl_z.slider.blockSignals(False)
+        self.sl_z.spin.blockSignals(True)
+        self.sl_z.spin.setRange(-z_range, z_range)
+        self.sl_z.spin.setSingleStep(z_step)
+        self.sl_z.spin.blockSignals(False)
+        self.sl_z.setValue(cur)
+        self.sl_z.blockSignals(False)
+        self._cfw_sig = None
+        self._refresh_plot()
+
+    def _on_x_sampling_changed(self):
+        """x range/step change: rebuild self._x_vals + invalidate CFW sweep."""
+        self._rebuild_x_vals()
+        self._cfw_sig = None
+        self._refresh_plot()
+
+    def _action_clear_cache(self):
+        """User-triggered: drop ray fans + CFW sweep cache."""
+        self._ray_fans.clear()
+        self._cfw_sig = None
+        self._update_bake_status()
+        self._refresh_plot()
+
     # ── Recompute pipeline ──────────────────────────────────────────────
     def _on_spectral_changed(self):
         """Cheap path: re-weight only.  No re-trace, no lens-curve recompute."""
@@ -590,10 +738,13 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
             self._fno = float(np.asarray(self._lens.paraxial.FNO()).ravel()[0])
             f2 = float(np.asarray(self._lens.paraxial.f2()).ravel()[0])
             self.lens_summary.setText(f"FNO = {self._fno:.2f},  f = {f2:.1f} mm")
+            self._curve_wl = self._active_wl_grid()
             self._recompute_spectral()
-            self._paraxial_curve = compute_chl_curve(self._lens, wavelengths_nm=BAKE_WL_NM)
+            self._paraxial_curve = compute_chl_curve(
+                self._lens, wavelengths_nm=self._curve_wl
+            )
             self._rori_curve, self._spot_curve = compute_rori_spot_curves(
-                self._lens, wavelengths_nm=BAKE_WL_NM
+                self._lens, wavelengths_nm=self._curve_wl
             )
             self._ray_fans.clear()
         self._update_bake_status()
@@ -689,7 +840,10 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
     def _recompute_spectral(self):
         sensor = self.cb_sensor.currentData()
         illum  = self.cb_illum.currentData()
-        self._sensor_response, self._sensor_wl = build_sensor_response(sensor, illum)
+        target = self._curve_wl if self._curve_wl is not None else self._active_wl_grid()
+        self._sensor_response, self._sensor_wl = build_sensor_response(
+            sensor, illum, target_wl=target
+        )
 
     def _get_ray_fan(self, num_rho: int) -> dict | None:
         """Return the cached ray fan for *num_rho* — no auto-bake on miss."""
@@ -770,6 +924,11 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
             round(self.sl_g.value(), 4),
             round(self.sl_e.value(), 4),
             bool(self.chk_pixelize.isChecked()),
+            int(self.cb_wl_step.currentData()),
+            int(self.sb_z_range.value()),
+            int(self.sb_z_step.value()),
+            int(self.sb_x_range.value()),
+            int(self.sb_x_step.value()),
         )
 
     def _ensure_cfw_curve(self):
@@ -788,12 +947,11 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
 
         if pixelize:
             sensor_id = self.cb_sensor.currentData() or "sonya900"
-            pitch = SENSOR_PIXEL_PITCH_UM.get(sensor_id, float(X_RES))
+            pitch = SENSOR_PIXEL_PITCH_UM.get(sensor_id, float(self.sb_x_step.value()))
         else:
-            pitch = float(X_RES)
+            pitch = float(self.sb_x_step.value())
 
-        z_arr = np.arange(-DEFOCUS_RANGE, DEFOCUS_RANGE + CFW_SWEEP_STEP,
-                          CFW_SWEEP_STEP, dtype=float)
+        z_arr = self._z_sweep_grid()
         cfw_arr = np.empty(len(z_arr), dtype=np.int32)
 
         def _maybe_pixelize(r, g, b):
@@ -897,7 +1055,7 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         # 2) Optional pixelization (physical sensor integrates over each pixel)
         if pixelize:
             sensor_id = self.cb_sensor.currentData() or "sonya900"
-            pitch = SENSOR_PIXEL_PITCH_UM.get(sensor_id, float(X_RES))
+            pitch = SENSOR_PIXEL_PITCH_UM.get(sensor_id, float(self.sb_x_step.value()))
             x_disp, r_raw = box_average(self._x_vals, r_raw, pitch)
             _,      g_raw = box_average(self._x_vals, g_raw, pitch)
             _,      b_raw = box_average(self._x_vals, b_raw, pitch)
@@ -905,7 +1063,7 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
             pix_suffix = f"  |  pitch = {pitch:.2f} µm/px"
         else:
             x_disp = self._x_vals
-            sample_step_um = float(X_RES)
+            sample_step_um = float(self.sb_x_step.value())
             pix_suffix = ""
 
         # 3) Tone-map for display + CFW classification
@@ -960,8 +1118,9 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         if idx.size:
             ax2.axvline(float(x_disp[idx[0]]),  color="w", ls="--", lw=1, alpha=0.85)
             ax2.axvline(float(x_disp[idx[-1]]), color="w", ls="--", lw=1, alpha=0.85)
+        x_range = float(self.sb_x_range.value())
         ax2.set(xlabel="x (µm)", title=f"Pseudo-density (CFW ≈ {cfw} µm)",
-                xlim=(-300, 300), yticks=[])
+                xlim=(-x_range, x_range), yticks=[])
 
         # Top-right: CFW vs defocus (single cell — bottom-right left empty)
         ax3 = fig.add_subplot(gs[0, 1])
