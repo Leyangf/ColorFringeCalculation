@@ -15,7 +15,8 @@ Requires [uv](https://docs.astral.sh/uv/):
 ```bash
 git clone https://github.com/Leyangf/ChromFringe.git
 cd ChromFringe
-uv sync
+uv sync                # library only (NumPy, Numba, Optiland …)
+uv sync --extra gui    # add the PySide6 desktop GUI
 ```
 
 `uv sync` creates `.venv/` and installs all locked dependencies (Python 3.13, NumPy, Numba, [Optiland](https://github.com/HarrisonKramer/optiland)) with `chromf` in editable mode. Run commands with `uv run` (e.g. `uv run jupyter lab`).
@@ -39,6 +40,14 @@ cfw = chromf.fringe_width(
 print(f"CFW = {cfw} µm")
 ```
 
+## Desktop GUI
+
+```bash
+uv run chromf-gui
+```
+
+The PySide6 GUI loads any Zemax `.zmx`, sweeps defocus interactively, and shows R/G/B edge responses, a pseudo-density colour-fringe strip, the CFW(z) curve, and side panels for the 2-D lens layout, sensor/illuminant spectra, and Paraxial vs RoRi CHL diagnostics. Geometric Fast PSF mode requires an explicit **Bake PSF** click; the **Pixelize** toggle box-averages the ESF onto the sensor's actual pixel pitch.
+
 ## Repository Layout
 
 ```
@@ -50,7 +59,8 @@ ChromFringe/
 └── src/chromf/
     ├── cfw.py              ← Numba-JIT CFW kernels
     ├── spectrum_loader.py  ← Spectral data loading & normalisation
-    └── optiland_bridge.py  ← Aberration extraction & ESF computation
+    ├── optiland_bridge.py  ← Aberration extraction & ESF computation
+    └── gui.py              ← PySide6 desktop GUI (entry point: chromf-gui)
 ```
 
 ## Notebooks

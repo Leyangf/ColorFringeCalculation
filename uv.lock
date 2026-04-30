@@ -212,6 +212,11 @@ dependencies = [
     { name = "scipy" },
 ]
 
+[package.optional-dependencies]
+gui = [
+    { name = "pyside6" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "comtypes", marker = "sys_platform == 'win32'" },
@@ -228,8 +233,10 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.2" },
     { name = "optiland" },
     { name = "pandas", specifier = ">=2.3" },
+    { name = "pyside6", marker = "extra == 'gui'", specifier = ">=6.11.0" },
     { name = "scipy", specifier = ">=1.16" },
 ]
+provides-extras = ["gui"]
 
 [package.metadata.requires-dev]
 dev = [

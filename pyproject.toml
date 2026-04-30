@@ -17,6 +17,12 @@ dependencies = [
     "optiland",
 ]
 
+[project.optional-dependencies]
+gui = ["pyside6>=6.11.0"]
+
+[project.scripts]
+chromf-gui = "chromf.gui:main"
+
 [dependency-groups]
 dev = [
     "ipykernel",

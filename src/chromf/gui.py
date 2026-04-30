@@ -11,7 +11,7 @@ Standalone desktop replacement for the ipywidgets cell in
 
 Run with::
 
-    uv run python examples/cfw_gui.py
+    uv run chromf-gui
 """
 
 from __future__ import annotations
@@ -48,7 +48,8 @@ from chromf.spectrum_loader import _load_daylight, _load_sensor
 
 
 # ── Paths & defaults (mirror cfw_geom_demo.ipynb) ────────────────────────
-PROJECT_ROOT     = Path(__file__).resolve().parents[1]
+# src/chromf/gui.py → parents[2] = project root
+PROJECT_ROOT     = Path(__file__).resolve().parents[2]
 DATA_RAW         = PROJECT_ROOT / "data" / "raw"
 DEFAULT_LENS_DIR = PROJECT_ROOT / "data" / "lens"
 DEFAULT_LENS     = DEFAULT_LENS_DIR / "NikonAINikkor85mmf2S.zmx"
@@ -607,7 +608,7 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         fig.clear()
         lens_to_draw = self._lens_for_layout or self._lens
         if lens_to_draw is None:
-            self.canvas_layout.draw_idle()
+            self.canvas_layout.draw()
             return
         ax = fig.add_subplot(111)
         try:
@@ -623,7 +624,10 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         ax.tick_params(labelsize=7)
         ax.xaxis.label.set_size(7)
         ax.yaxis.label.set_size(7)
-        self.canvas_layout.draw_idle()
+        # Force a synchronous paint — draw_idle() can be coalesced/dropped
+        # when fig.clear() + OpticViewer rebuild the axes on reload, leaving
+        # the previous lens visible until the user interacts with the canvas.
+        self.canvas_layout.draw()
 
     def _redraw_chl_comparison(self):
         """Plot Paraxial CHL and RoRi CHL curves on a single axes."""
