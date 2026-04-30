@@ -175,6 +175,91 @@ def tone_map(raw: np.ndarray, exposure: float, gamma: float) -> np.ndarray:
     return (np.tanh(exposure * raw) / np.tanh(exposure)) ** gamma
 
 
+def psf_2d_geom(rf: dict, z: float, n: int = 200,
+                extent_um: float | None = None) -> tuple[tuple, np.ndarray]:
+    """Polychromatic geometric PSF as an RGB image, from a baked ray fan.
+
+    Each (ρ_k, λ_j) pupil-zone ray lands at radius ``R = |TA0 + slope·z|``;
+    we histogram those radii (weighted by ρ·W_gl pupil-area weights and
+    ``g_norm`` per channel) and revolve into a 2-D image.
+    """
+    TA0   = rf["TA0"]
+    slope = rf["slope"]
+    rho   = rf["rho_nodes"]
+    W_gl  = rf["W_gl"]
+
+    R = np.abs(TA0 + slope * float(z))                  # (K, N_wl)
+    pupil_w = (rho * W_gl)[:, None]                     # (K, 1)
+
+    if extent_um is None:
+        extent_um = max(50.0, 1.5 * float(R.max()))
+
+    n_bins = 64
+    edges = np.linspace(0.0, extent_um, n_bins + 1)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    ring_area = 2.0 * np.pi * np.maximum(centers, 1e-3) * (edges[1] - edges[0])
+
+    xs = np.linspace(-extent_um, extent_um, n)
+    X, Y = np.meshgrid(xs, xs)
+    R_2d = np.sqrt(X * X + Y * Y)
+
+    img = np.zeros((n, n, 3), dtype=np.float64)
+    for c, ch in enumerate(("R", "G", "B")):
+        g = rf[ch]["g_norm"]                            # (N_wl,)
+        weights = (pupil_w * g[None, :]).ravel()        # (K · N_wl,)
+        I_r, _ = np.histogram(R.ravel(), bins=edges, weights=weights)
+        I_r = I_r / ring_area
+        img[:, :, c] = np.interp(R_2d, centers, I_r, left=I_r[0], right=0.0)
+
+    return (-extent_um, extent_um, -extent_um, extent_um), img
+
+
+def psf_2d_analytic(chl_um: np.ndarray, sa_um: np.ndarray | None,
+                    fno: float, sensor_response: dict, z: float,
+                    psf_mode: str, n: int = 200,
+                    extent_um: float | None = None
+                    ) -> tuple[tuple, np.ndarray]:
+    """Polychromatic analytic PSF (Gaussian or uniform Disc) as an RGB image.
+
+    Per-wavelength radius ``rho(λ) = √( ((z − chl(λ))/√(4F²−1))² + sa(λ)² )``;
+    polychromatic image is the sensor-weighted sum of monochromatic PSFs.
+    """
+    denom = np.sqrt(4.0 * fno * fno - 1.0)
+    rho_chl = np.abs((float(z) - chl_um) / denom)
+    sa = sa_um if sa_um is not None else np.zeros_like(chl_um)
+    rho_total = np.sqrt(rho_chl * rho_chl + sa * sa)
+    rho_total = np.maximum(rho_total, 1e-3)             # avoid singular delta
+
+    if extent_um is None:
+        extent_um = max(50.0, 1.5 * float(rho_total.max()))
+
+    xs = np.linspace(-extent_um, extent_um, n)
+    X, Y = np.meshgrid(xs, xs)
+    R = np.sqrt(X * X + Y * Y).ravel()                  # (n²,)
+
+    if psf_mode == "gauss":
+        sigma = 0.5 * rho_total                         # (N_wl,)
+        log_psf = (
+            -(R[None, :] ** 2) / (2.0 * sigma[:, None] ** 2)
+            - np.log(2.0 * np.pi * sigma[:, None] ** 2)
+        )
+        psf_per_wl = np.exp(log_psf)                    # (N_wl, n²)
+    else:                                                # "disc"
+        mask = R[None, :] < rho_total[:, None]
+        psf_per_wl = mask / (np.pi * rho_total[:, None] ** 2)
+
+    img = np.zeros((n, n, 3), dtype=np.float64)
+    for c, ch in enumerate(("R", "G", "B")):
+        w = sensor_response[ch]
+        s = float(w.sum())
+        if s <= 0.0:
+            continue
+        poly = (w[:, None] * psf_per_wl).sum(axis=0) / s
+        img[:, :, c] = poly.reshape(n, n)
+
+    return (-extent_um, extent_um, -extent_um, extent_um), img
+
+
 def box_average(x_fine: np.ndarray, y_fine: np.ndarray, pitch: float
                 ) -> tuple[np.ndarray, np.ndarray]:
     """Box-average *y_fine(x_fine)* onto a pixel grid of step *pitch*.
@@ -1136,6 +1221,30 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
                 title="CFW vs defocus")
         ax3.legend(fontsize=7, loc="lower right")
         ax3.grid(True, alpha=0.4)
+
+        # Bottom-right: polychromatic PSF at current z
+        ax4 = fig.add_subplot(gs[1, 1])
+        try:
+            if psf_idx == self.PSF_GEOM:
+                extent, psf_img = psf_2d_geom(rf, z)
+            else:
+                psf_mode_str = "gauss" if psf_idx == self.PSF_GAUSS else "disc"
+                extent, psf_img = psf_2d_analytic(
+                    chl, sa, self._fno, self._sensor_response,
+                    z, psf_mode_str,
+                )
+            peak = float(psf_img.max())
+            disp = psf_img / peak if peak > 0 else psf_img
+            ax4.imshow(np.clip(disp, 0.0, 1.0), extent=extent,
+                       origin="lower", interpolation="bilinear")
+        except Exception as e:  # noqa: BLE001
+            ax4.text(0.5, 0.5, f"PSF unavailable\n({type(e).__name__})",
+                     ha="center", va="center", transform=ax4.transAxes,
+                     fontsize=9, color="gray")
+            ax4.set_axis_off()
+        ax4.set(xlabel="x (µm)", ylabel="y (µm)",
+                title=f"Polychromatic PSF (z = {z:+.0f} µm)")
+        ax4.set_aspect("equal")
 
         fig.tight_layout()
         self.canvas.draw_idle()
