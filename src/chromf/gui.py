@@ -36,6 +36,8 @@ from optiland import fileio
 from optiland.physical_apertures import RadialAperture
 from optiland.visualization import OpticViewer
 
+from scipy.ndimage import gaussian_filter
+
 from chromf import (
     channel_products,
     compute_chl_curve,
@@ -176,20 +178,40 @@ def tone_map(raw: np.ndarray, exposure: float, gamma: float) -> np.ndarray:
 
 
 def psf_2d_geom(rf: dict, z: float, n: int = 200,
-                extent_um: float | None = None) -> tuple[tuple, np.ndarray]:
+                extent_um: float | None = None,
+                rho_dense_n: int = 512,
+                smooth_factor: float = 0.25,
+                ) -> tuple[tuple, np.ndarray]:
     """Polychromatic geometric PSF as an RGB image, from a baked ray fan.
 
-    Each (ρ_k, λ_j) pupil-zone ray lands at radius ``R = |TA0 + slope·z|``;
-    we histogram those radii (weighted by ρ·W_gl pupil-area weights and
-    ``g_norm`` per channel) and revolve into a 2-D image.
-    """
-    TA0   = rf["TA0"]
-    slope = rf["slope"]
-    rho   = rf["rho_nodes"]
-    W_gl  = rf["W_gl"]
+    Each pupil zone ρ at wavelength λ lands at image radius
+    ``R(ρ; z, λ) = |TA0(ρ, λ) + slope(ρ, λ) · z|``.  The baked ray fan only
+    has K (default 32) Gauss-Legendre ρ nodes — too sparse for a smooth
+    radial histogram at large defocus, where adjacent radii can be wider
+    than a bin and create empty-bin black-ring artefacts.
 
-    R = np.abs(TA0 + slope * float(z))                  # (K, N_wl)
-    pupil_w = (rho * W_gl)[:, None]                     # (K, 1)
+    We linearly interpolate TA0 and slope onto a dense uniform ρ grid
+    (default 512 points) before histogramming.  Pupil-area weights become
+    the trivial ``ρ · Δρ`` and per-channel ``g_norm`` is interpolated onto
+    that dense grid (constant per λ, so just copied).
+    """
+    TA0_k   = rf["TA0"]                                 # (K, N_wl)
+    slope_k = rf["slope"]
+    rho_k   = rf["rho_nodes"]                           # (K,)
+    K, N_wl = TA0_k.shape
+
+    rho_d = np.linspace(rho_k[0], rho_k[-1], rho_dense_n)
+    drho  = float(rho_d[1] - rho_d[0])
+
+    # Linear interpolation along ρ for each wavelength column.
+    TA0   = np.empty((rho_dense_n, N_wl), dtype=np.float64)
+    slope = np.empty_like(TA0)
+    for j in range(N_wl):
+        TA0[:, j]   = np.interp(rho_d, rho_k, TA0_k[:, j])
+        slope[:, j] = np.interp(rho_d, rho_k, slope_k[:, j])
+
+    R = np.abs(TA0 + slope * float(z))                  # (rho_dense_n, N_wl)
+    pupil_w = (rho_d * drho)[:, None]                   # (rho_dense_n, 1)
 
     if extent_um is None:
         extent_um = max(50.0, 1.5 * float(R.max()))
@@ -206,10 +228,22 @@ def psf_2d_geom(rf: dict, z: float, n: int = 200,
     img = np.zeros((n, n, 3), dtype=np.float64)
     for c, ch in enumerate(("R", "G", "B")):
         g = rf[ch]["g_norm"]                            # (N_wl,)
-        weights = (pupil_w * g[None, :]).ravel()        # (K · N_wl,)
+        weights = (pupil_w * g[None, :]).ravel()
         I_r, _ = np.histogram(R.ravel(), bins=edges, weights=weights)
         I_r = I_r / ring_area
         img[:, :, c] = np.interp(R_2d, centers, I_r, left=I_r[0], right=0.0)
+
+    # Soften the spherical-aberration caustic so the centre doesn't read
+    # as non-physically pitch-black.  σ scales with R_max so far-defocus
+    # PSFs (whose caustic dark holes are also bigger) get proportionally
+    # more blur, mimicking diffraction + glass scatter fill-in in real
+    # imaging.  PSF outer envelope is preserved; only fine ring structure
+    # is softened.
+    pixel_um = 2.0 * extent_um / n
+    if smooth_factor > 0.0:
+        sigma_um = max(2.0, float(smooth_factor) * float(R.max()))
+        sigma_px = sigma_um / pixel_um
+        img = gaussian_filter(img, sigma=(sigma_px, sigma_px, 0.0))
 
     return (-extent_um, extent_um, -extent_um, extent_um), img
 
@@ -592,9 +626,14 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         self.sl_z = FloatSlider(-DEFOCUS_RANGE, DEFOCUS_RANGE, DEFOCUS_STEP, 0.0)
         self.sl_g = FloatSlider(1.0, 3.0, 0.1, GAMMA_DEFAULT)
         self.sl_e = ChoiceSlider([1, 2, 4, 8, 16], EXPOSURE_DEFAULT)
+        # PSF caustic-smoothing factor σ = factor × R_max.  0 = raw geometric
+        # caustic (sharp rings, dark centre); 0.25 = heavy diffraction-style
+        # smoothing (centre always white, rings soft).  Geom mode only.
+        self.sl_psf_smooth = FloatSlider(0.0, 0.25, 0.05, 0.25)
         dg.addRow("Defocus z (µm):", self.sl_z)
         dg.addRow("Gamma:",          self.sl_g)
         dg.addRow("Exposure:",       self.sl_e)
+        dg.addRow("PSF smooth:",     self.sl_psf_smooth)
         cl.addWidget(gb_disp)
         cl.addStretch(1)
 
@@ -656,6 +695,7 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         self.sl_z.valueChanged.connect(self._refresh_plot)
         self.sl_g.valueChanged.connect(self._refresh_plot)
         self.sl_e.valueChanged.connect(self._refresh_plot)
+        self.sl_psf_smooth.valueChanged.connect(self._refresh_plot)
 
         self._update_widget_states()
 
@@ -686,6 +726,8 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         # curve is RoRi-derived).  Disable the checkbox elsewhere so the UI
         # reflects what _refresh_plot actually consumes.
         self.chk_sa.setEnabled(not is_geom and is_rori)
+        # PSF smooth only affects the geometric-caustic ray-fan PSF.
+        self.sl_psf_smooth.setEnabled(is_geom)
 
     # ── Lens actions ────────────────────────────────────────────────────
     def _action_load_zmx(self):
@@ -1226,17 +1268,53 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         ax4 = fig.add_subplot(gs[1, 1])
         try:
             if psf_idx == self.PSF_GEOM:
-                extent, psf_img = psf_2d_geom(rf, z)
+                extent, psf_img = psf_2d_geom(
+                    rf, z, smooth_factor=float(self.sl_psf_smooth.value())
+                )
             else:
                 psf_mode_str = "gauss" if psf_idx == self.PSF_GAUSS else "disc"
                 extent, psf_img = psf_2d_analytic(
                     chl, sa, self._fno, self._sensor_response,
                     z, psf_mode_str,
                 )
-            peak = float(psf_img.max())
-            disp = psf_img / peak if peak > 0 else psf_img
+            # Optional sensor-pixel discretisation: box-average the fine PSF
+            # onto blocks the size of the sensor pitch, mirroring what the
+            # physical sensor would integrate per pixel.
+            if pixelize:
+                sensor_id = self.cb_sensor.currentData() or "sonya900"
+                pitch = SENSOR_PIXEL_PITCH_UM.get(sensor_id,
+                                                  float(self.sb_x_step.value()))
+                fine_px = 2.0 * extent[1] / psf_img.shape[0]
+                factor = max(1, int(round(pitch / fine_px)))
+                if factor > 1:
+                    h, w, _ = psf_img.shape
+                    h_new, w_new = h // factor, w // factor
+                    crop = psf_img[:h_new * factor, :w_new * factor]
+                    psf_img = crop.reshape(h_new, factor, w_new, factor, 3).mean(
+                        axis=(1, 3))
+                    half = factor * fine_px / 2.0
+                    extent = (extent[0] + (extent[0] % pitch) + 0.0,
+                              extent[1] - (extent[1] % pitch),
+                              extent[2] + (extent[2] % pitch) + 0.0,
+                              extent[3] - (extent[3] % pitch))
+            # Per-channel normalisation referenced to the centre pixel (or a
+            # small central patch on the fine grid) so the on-axis point
+            # always saturates to white regardless of caustic spread.
+            disp = psf_img.copy()
+            h, w = disp.shape[:2]
+            cy, cx = h // 2, w // 2
+            patch = max(0 if pixelize else 2, min(h, w) // 40)
+            for c in range(3):
+                if patch > 0:
+                    ref = float(disp[cy - patch:cy + patch + 1,
+                                     cx - patch:cx + patch + 1, c].mean())
+                else:
+                    ref = float(disp[cy, cx, c])
+                if ref > 0:
+                    disp[:, :, c] /= ref
             ax4.imshow(np.clip(disp, 0.0, 1.0), extent=extent,
-                       origin="lower", interpolation="bilinear")
+                       origin="lower",
+                       interpolation="nearest" if pixelize else "bilinear")
         except Exception as e:  # noqa: BLE001
             ax4.text(0.5, 0.5, f"PSF unavailable\n({type(e).__name__})",
                      ha="center", va="center", transform=ax4.transAxes,
