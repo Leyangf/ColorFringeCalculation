@@ -27,7 +27,7 @@ except ModuleNotFoundError:
 DEFAULT_FNUMBER: float = 2.0
 EXPOSURE_SLOPE: float = 4.0
 DISPLAY_GAMMA: float = 1.8
-COLOR_DIFF_THRESHOLD: float = 0.15
+COLOR_DIFF_THRESHOLD: float = 0.2
 EDGE_HALF_WINDOW_PX: int = 400
 
 ALLOWED_PSF_MODES: tuple[str, ...] = ("disc", "gauss")
@@ -197,29 +197,31 @@ def is_fringe_mask(
     g: np.ndarray,
     b: np.ndarray,
     diff_threshold: float = COLOR_DIFF_THRESHOLD,
-    low_threshold: float = 0.15,
-    high_threshold: float = 0.80,
+    low_threshold: float = 0.0,
+    high_threshold: float = 1.0,
 ) -> np.ndarray:
     """Boolean mask of visible chromatic-fringe pixels.
 
     A pixel is classified as a visible fringe pixel when **all three**
-    conditions hold (paper definition):
+    conditions hold:
 
-    1. Every channel exceeds *low_threshold* — excludes near-black pixels.
+    1. Mean RGB ``(r+g+b)/3`` exceeds *low_threshold* — excludes near-black
+       pixels.  Set ``low_threshold=0.0`` to disable.
     2. At least one pairwise channel difference exceeds *diff_threshold* —
        visible colour shift present.
-    3. At least one channel is below *high_threshold* — excludes near-white /
-       saturated pixels.
+    3. Mean RGB ``(r+g+b)/3`` is below *high_threshold* — excludes
+       near-white / saturated pixels.  Set ``high_threshold=1.0`` to disable.
 
     Works element-wise on both scalars and NumPy arrays.
     """
-    cond1 = (r > low_threshold) & (g > low_threshold) & (b > low_threshold)
+    mean_rgb = (r + g + b) / 3.0
+    cond1 = mean_rgb > low_threshold
     cond2 = (
         (np.abs(r - g) > diff_threshold)
         | (np.abs(r - b) > diff_threshold)
         | (np.abs(g - b) > diff_threshold)
     )
-    cond3 = np.minimum(np.minimum(r, g), b) < high_threshold
+    cond3 = mean_rgb < high_threshold
     return cond1 & cond2 & cond3
 
 

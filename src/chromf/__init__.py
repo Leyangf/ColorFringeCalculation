@@ -7,7 +7,7 @@ Core CFW functions (from cfw.py):
 
     fringe_width            Total colour fringe width in µm at a given defocus
     edge_rgb_response_vec   R, G, B ESF arrays at (x_arr, z)  [vectorised]
-    is_fringe_mask          Boolean mask of visible fringe pixels (all 3 conditions)
+    is_fringe_mask          Boolean mask of visible fringe pixels (3 conditions)
 
 Spectral data (from spectrum_loader.py):
 

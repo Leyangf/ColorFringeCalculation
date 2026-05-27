@@ -66,7 +66,9 @@ DEFOCUS_STEP         = 5
 CFW_SWEEP_STEP       = 10       # coarser grid for the CFW(z) curve (geom mode is slow)
 GAMMA_DEFAULT        = 1.8
 EXPOSURE_DEFAULT     = 4.0
-COLOR_DIFF_THRESHOLD = 0.15
+THR_LOW_DEFAULT      = 0.0    # cond1 disabled (no near-black exclusion)
+THR_DIFF_DEFAULT     = 0.2    # cond2: pairwise RGB diff threshold
+THR_HIGH_DEFAULT     = 1.0    # cond3 disabled (no near-white exclusion)
 XRANGE               = 300
 X_RES                = 1
 IMG_HEIGHT           = 60
@@ -635,6 +637,23 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         dg.addRow("Exposure:",       self.sl_e)
         dg.addRow("PSF smooth:",     self.sl_psf_smooth)
         cl.addWidget(gb_disp)
+
+        # Fringe-detection thresholds (is_fringe_mask 3 conditions)
+        gb_thr = QtWidgets.QGroupBox("Fringe Thresholds")
+        tg = QtWidgets.QFormLayout(gb_thr)
+        self.sl_thr_low  = FloatSlider(0.0, 1.0, 0.05, THR_LOW_DEFAULT)
+        self.sl_thr_diff = FloatSlider(0.0, 1.0, 0.05, THR_DIFF_DEFAULT)
+        self.sl_thr_high = FloatSlider(0.0, 1.0, 0.05, THR_HIGH_DEFAULT)
+        self.sl_thr_low.setToolTip(
+            "Cond1: mean RGB (R+G+B)/3 must exceed this. Set 0.0 to disable.")
+        self.sl_thr_diff.setToolTip(
+            "Cond2: at least one |Δ| between RGB channels must exceed this.")
+        self.sl_thr_high.setToolTip(
+            "Cond3: mean RGB (R+G+B)/3 must be below this. Set 1.0 to disable.")
+        tg.addRow("Low (mean >):",    self.sl_thr_low)
+        tg.addRow("Diff (|Δ| >):",    self.sl_thr_diff)
+        tg.addRow("High (mean <):",   self.sl_thr_high)
+        cl.addWidget(gb_thr)
         cl.addStretch(1)
 
         outer.addWidget(ctrl, 0)
@@ -696,6 +715,9 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         self.sl_g.valueChanged.connect(self._refresh_plot)
         self.sl_e.valueChanged.connect(self._refresh_plot)
         self.sl_psf_smooth.valueChanged.connect(self._refresh_plot)
+        self.sl_thr_low.valueChanged.connect(self._refresh_plot)
+        self.sl_thr_diff.valueChanged.connect(self._refresh_plot)
+        self.sl_thr_high.valueChanged.connect(self._refresh_plot)
 
         self._update_widget_states()
 
@@ -1053,6 +1075,9 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
             bool(self.chk_pixelize.isChecked()),
             int(self.cb_wl_step.currentData()),
             int(self.sb_z_range.value()),
+            round(self.sl_thr_low.value(), 4),
+            round(self.sl_thr_diff.value(), 4),
+            round(self.sl_thr_high.value(), 4),
             int(self.sb_z_step.value()),
             int(self.sb_x_range.value()),
             int(self.sb_x_step.value()),
@@ -1071,6 +1096,9 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         use_sa   = self.chk_sa.isChecked()
         num_rho  = int(self.cb_nrho.currentData())
         pixelize = self.chk_pixelize.isChecked()
+        thr_low  = self.sl_thr_low.value()
+        thr_diff = self.sl_thr_diff.value()
+        thr_high = self.sl_thr_high.value()
 
         if pixelize:
             sensor_id = self.cb_sensor.currentData() or "sonya900"
@@ -1103,7 +1131,12 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
                     r = tone_map(r_raw, exposure, gamma)
                     g = tone_map(g_raw, exposure, gamma)
                     b = tone_map(b_raw, exposure, gamma)
-                    mask = is_fringe_mask(r, g, b, diff_threshold=COLOR_DIFF_THRESHOLD)
+                    mask = is_fringe_mask(
+                        r, g, b,
+                        diff_threshold=thr_diff,
+                        low_threshold=thr_low,
+                        high_threshold=thr_high,
+                    )
                     idx = np.flatnonzero(mask)
                     n = int(idx[-1] - idx[0] + 1) if idx.size else 0
                     cfw_arr[i] = int(round(n * pitch))
@@ -1130,7 +1163,12 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
                         b = tone_map(b_raw, exposure, gamma)
                     else:
                         r, g, b = r_raw, g_raw, b_raw
-                    mask = is_fringe_mask(r, g, b, diff_threshold=COLOR_DIFF_THRESHOLD)
+                    mask = is_fringe_mask(
+                        r, g, b,
+                        diff_threshold=thr_diff,
+                        low_threshold=thr_low,
+                        high_threshold=thr_high,
+                    )
                     idx = np.flatnonzero(mask)
                     n = int(idx[-1] - idx[0] + 1) if idx.size else 0
                     cfw_arr[i] = int(round(n * pitch))
@@ -1152,6 +1190,9 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         use_sa   = self.chk_sa.isChecked()
         num_rho  = int(self.cb_nrho.currentData())
         pixelize = self.chk_pixelize.isChecked()
+        thr_low  = self.sl_thr_low.value()
+        thr_diff = self.sl_thr_diff.value()
+        thr_high = self.sl_thr_high.value()
 
         # 1) Raw RGB ESF on the fine grid
         if psf_idx == self.PSF_GEOM:
@@ -1198,7 +1239,12 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         edge_g = tone_map(g_raw, exposure, gamma)
         edge_b = tone_map(b_raw, exposure, gamma)
 
-        boundaries = is_fringe_mask(edge_r, edge_g, edge_b, diff_threshold=COLOR_DIFF_THRESHOLD)
+        boundaries = is_fringe_mask(
+            edge_r, edge_g, edge_b,
+            diff_threshold=thr_diff,
+            low_threshold=thr_low,
+            high_threshold=thr_high,
+        )
         idx = np.flatnonzero(boundaries)
         cfw_samples = int(idx[-1] - idx[0] + 1) if idx.size else 0
         cfw = int(round(cfw_samples * sample_step_um))
@@ -1219,8 +1265,8 @@ class ChromFringeWindow(QtWidgets.QMainWindow):
         ax1.plot(x_disp, edge_r, color="r", label="R", **line_kw)
         ax1.plot(x_disp, edge_g, color="g", label="G", **line_kw)
         ax1.plot(x_disp, edge_b, color="b", label="B", **line_kw)
-        ax1.axhline(COLOR_DIFF_THRESHOLD, color="k", ls=":", lw=1, alpha=0.5,
-                    label=f"thr={COLOR_DIFF_THRESHOLD:.2f}")
+        ax1.axhline(thr_diff, color="k", ls=":", lw=1, alpha=0.5,
+                    label=f"thr={thr_diff:.2f}")
         if idx.size:
             ax1.axvline(float(x_disp[idx[0]]),  color="k", ls="--", lw=1, label="boundary")
             ax1.axvline(float(x_disp[idx[-1]]), color="k", ls="--", lw=1)
